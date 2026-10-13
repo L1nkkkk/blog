@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0}[hidden]{display:none!important}</style>
+<title>Vulkan 帧循环入门</title>
+<meta name="tags" content="Vulkan, 课件">
+<meta name="description" content="从一帧画面怎么走完说起：对象链、command buffer、同步和 swapchain，每一章都有可以动手操作的图。">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one reading column; each chapter = prose, an operable animated figure, further reading, then questions to answer with the page closed.
+   Three hues are an encoding used in every figure: CPU (your program), GPU (driver executes), presentation engine. */
+:root{
+  --bg:#f2f4f8; --surface:#ffffff; --ink:#17202e; --muted:#5a6678; --line:#d3dae4; --code:#e8ecf3;
+  --cpu:#b3541b; --gpu:#0e776a; --pe:#574cc9; --bad:#b3261e; --ok:#1c7a3d; --gl:#855c00;
+  --sans:"IBM Plex Sans","PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  --mono:"IBM Plex Mono","Cascadia Mono",Consolas,"Microsoft YaHei",monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#10151c; --surface:#19202a; --ink:#e3e8ef; --muted:#97a3b4; --line:#2e3846; --code:#222b37;
+  --cpu:#f0945c; --gpu:#4fd0bc; --pe:#a59dff; --bad:#ff8d84; --ok:#70d08d; --gl:#e2b84a; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#10151c; --surface:#19202a; --ink:#e3e8ef; --muted:#97a3b4; --line:#2e3846; --code:#222b37;
+  --cpu:#f0945c; --gpu:#4fd0bc; --pe:#a59dff; --bad:#ff8d84; --ok:#70d08d; --gl:#e2b84a; color-scheme:dark}
+
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;padding-inline:16px;padding-block:32px 80px}
+.wrap{max-width:780px;margin-inline:auto;display:flex;flex-direction:column;gap:18px}
+h1{font-size:2.1rem;line-height:1.2;margin:0;font-weight:700;text-wrap:balance}
+h2{font-size:1.45rem;line-height:1.3;margin:40px 0 0;font-weight:700;text-wrap:balance;display:flex;gap:12px;align-items:baseline}
+h2 .n{font-family:var(--mono);font-size:.85rem;color:var(--muted);font-weight:500}
+h3{font-size:1.05rem;margin:10px 0 0;font-weight:600}
+p,ul,ol{margin:0} ul,ol{padding-left:1.3em}
+.sub{color:var(--muted);font-size:1rem}
+code{font-family:var(--mono);font-size:.86em;background:var(--code);padding:.1em .35em;border-radius:3px;overflow-wrap:anywhere}
+a{color:var(--pe)}
+.chips{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:.88rem;color:var(--muted)}
+.chips span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;background:var(--c)}
+.note{border-left:3px solid var(--ink);padding:4px 0 4px 14px;font-size:.95rem}
+nav{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:.9rem;border-block:1px solid var(--line);padding-block:10px}
+nav a{color:var(--ink);text-decoration:none} nav a:hover{text-decoration:underline}
+
+figure{margin:4px 0;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+figcaption{font-size:.88rem;color:var(--muted);line-height:1.6}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.scroll{overflow-x:auto}
+button,select{font:inherit;font-size:.88rem;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:6px 11px;cursor:pointer}
+button:hover{border-color:var(--ink)}
+button:focus-visible,select:focus-visible,input:focus-visible,nav a:focus-visible{outline:2px solid var(--pe);outline-offset:2px}
+button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+button.mono{font-family:var(--mono);font-size:.8rem}
+label{font-size:.88rem;color:var(--muted);display:inline-flex;gap:8px;align-items:center}
+.msg{font-size:.9rem;min-height:1.6em;padding:8px 12px;border-radius:4px;background:var(--bg)}
+.msg.bad{color:var(--bad)} .msg.ok{color:var(--ok)}
+.read{font-family:var(--mono);font-size:.82rem;display:flex;flex-wrap:wrap;gap:6px 20px}
+.read b{font-weight:600}
+.cpu{color:var(--cpu)} .gpu{color:var(--gpu)} .pe{color:var(--pe)}
+.q,.ref{border:1px solid var(--line);border-radius:6px;padding:14px 16px;display:flex;flex-direction:column;gap:6px;font-size:.95rem}
+.q{background:color-mix(in srgb,var(--pe) 8%,var(--surface))}
+.q h3,.ref h3{margin:0;font-size:.85rem;letter-spacing:.06em;color:var(--muted)}
+.ref{font-size:.9rem} .ref li{margin-block:2px}
+.gl{border-left:3px solid var(--gl);padding:4px 0 4px 14px;display:flex;flex-direction:column;gap:8px;font-size:.92rem;min-width:0}
+.gl h3{margin:0;font-size:.85rem;letter-spacing:.06em;color:var(--gl)}
+.gl table{font-size:.86rem}
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{border-bottom:1px solid var(--line);padding:7px 12px 7px 0;text-align:left;vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:.82rem;white-space:nowrap}
+.bar{height:8px;background:var(--bg);border-radius:4px;overflow:hidden;min-width:60px;flex:1}
+.bar i{display:block;height:100%;width:0;background:var(--c,var(--gpu))}
+
+/* ch0 */
+.flow rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5}
+.flow text{font-family:var(--sans);font-size:13px;fill:var(--ink)}
+.flow .ll{font-size:12px;font-weight:600}
+.flow .lab{font-size:11px;fill:var(--muted)}
+.flow line,.flow path{stroke:var(--muted);fill:none;stroke-width:1.3}
+.flow .lane{stroke:var(--line);stroke-dasharray:2 4}
+.flow .on rect{stroke:var(--ink);stroke-width:2.5}
+.flow #tok{fill:var(--bad);transition:transform .7s cubic-bezier(.5,0,.3,1)}
+/* ch1 */
+.chain{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chain i{color:var(--muted);font-style:normal}
+.chain button{transition:opacity .3s,border-color .3s} .chain button.off{opacity:.35;border-style:dashed}
+.detail{display:grid;grid-template-columns:5.5em 1fr;gap:6px 12px;font-size:.92rem}
+.detail dt{color:var(--muted)} .detail dd{margin:0;min-width:0}
+/* ch2 */
+.st rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5;transition:fill .25s}
+.st .on rect{fill:var(--ink);stroke:var(--ink)} .st text{fill:var(--ink);font-family:var(--mono);font-size:13px}
+.st .on text{fill:var(--bg)} .st .lab{fill:var(--muted);font-size:12px} .st path,.st line{stroke:var(--muted);fill:none;stroke-width:1.3}
+.cmds{display:flex;flex-wrap:wrap;gap:4px;min-height:30px;padding:8px;border:1px dashed var(--line);border-radius:4px;align-items:center}
+.cmds span{font-family:var(--mono);font-size:.74rem;padding:2px 7px;border-radius:3px;border:1px solid var(--cpu);color:var(--cpu);transition:background .2s,color .2s,border-color .2s}
+.cmds span.run{background:var(--gpu);border-color:var(--gpu);color:var(--surface)}
+.cmds span.done{border-color:var(--gpu);color:var(--gpu)}
+.cmds em{font-style:normal;font-size:.82rem;color:var(--muted)}
+/* ch3 */
+.fac{display:grid;grid-template-columns:1fr 1.5fr 1fr;gap:10px}
+.fac>div{border:1px solid var(--line);border-radius:4px;padding:10px;display:flex;flex-direction:column;gap:8px;min-width:0;font-size:.85rem}
+.fac b{font-size:.8rem}
+.fq{display:flex;flex-wrap:wrap;gap:3px;min-height:52px;align-content:flex-start}
+.fq span{font-family:var(--mono);font-size:.7rem;padding:1px 5px;border-radius:2px;background:var(--cpu);color:var(--surface)}
+@media (max-width:560px){.fac{grid-template-columns:1fr}}
+.pill{font-family:var(--mono);font-size:.8rem;padding:3px 9px;border-radius:99px;border:1px solid var(--line);white-space:nowrap}
+.pill.hot{background:var(--gpu);border-color:var(--gpu);color:var(--surface)}
+.pill.wait{background:var(--cpu);border-color:var(--cpu);color:var(--surface)}
+.kv{display:grid;grid-template-columns:auto auto 1fr;gap:8px 12px;align-items:center;font-size:.9rem}
+/* ch4 */
+.swap{display:grid;grid-template-columns:1fr 150px;gap:12px;align-items:stretch}
+@media (max-width:560px){.swap{grid-template-columns:1fr}}
+.imgs{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.imgs button{display:flex;flex-direction:column;gap:4px;align-items:flex-start;padding:10px;min-height:82px;text-align:left;border-width:2px;cursor:default;min-width:0;transition:background .3s,border-color .3s}
+.imgs b{font-family:var(--mono);font-size:1.05rem;display:flex;align-items:center;gap:6px}
+.imgs b::before{content:"";width:12px;height:12px;border-radius:2px;background:var(--h)}
+.imgs small{font-size:.74rem;line-height:1.35}
+.imgs .free{border-color:var(--pe);border-style:dashed}
+.imgs .app{border-color:var(--cpu);background:color-mix(in srgb,var(--cpu) 14%,var(--surface));cursor:pointer}
+.imgs .queued{border-color:var(--pe);background:color-mix(in srgb,var(--pe) 14%,var(--surface))}
+.imgs .screen{border-color:var(--pe);background:color-mix(in srgb,var(--pe) 30%,var(--surface))}
+.mon{border:4px solid var(--ink);border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:120px;font-family:var(--mono);color:#14181f;background:#8a94a3;transition:background .25s}
+.mon b{font-size:2.4rem;line-height:1} .mon small{font-size:.72rem}
+/* ch5 */
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tiles div{display:flex;flex-direction:column;gap:6px;font-size:.82rem;color:var(--muted);min-width:0}
+.tiles svg{width:100%;height:auto;border:1px solid var(--line);border-radius:3px;display:block}
+/* ch6 */
+.win{height:120px;background:var(--bg);border-radius:4px;position:relative;overflow:hidden}
+.win div{position:absolute;left:8px;top:8px;border:2px solid var(--cpu);background:color-mix(in srgb,var(--cpu) 12%,var(--surface));border-radius:2px;transition:width .15s,height .15s}
+/* ch6 barrier */
+.pbrow{display:grid;grid-template-columns:10.5em 1fr;gap:8px 12px;align-items:center;font-size:.86rem}
+@media (max-width:560px){.pbrow{grid-template-columns:1fr}}
+.pb{display:flex;flex-wrap:wrap;gap:4px;align-items:stretch}
+.pb span{font-family:var(--mono);font-size:.7rem;padding:6px 8px;border:1px solid var(--line);border-radius:3px;line-height:1.35;transition:background .2s,color .2s,border-color .2s}
+.pb small{font-family:var(--sans);font-size:.7rem}
+.pb .cur{background:var(--gpu);border-color:var(--gpu);color:var(--surface)}
+.pb .done{border-color:var(--gpu);color:var(--gpu)}
+.pb .hold{background:var(--cpu);border-color:var(--cpu);color:var(--surface)}
+/* ch7 */
+.vmsg{font-family:var(--mono);font-size:.78rem;line-height:1.9;background:var(--bg);padding:12px;border-radius:4px;overflow-wrap:anywhere}
+.vmsg button{font:inherit;padding:1px 3px;border:none;border-bottom:2px solid var(--line);border-radius:0;background:none;text-align:left;display:inline}
+.vmsg button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<header style="display:flex;flex-direction:column;gap:10px">
+  <p class="sub" style="font-family:var(--mono);font-size:.82rem">Task 01 配套教材 · 第 4 版</p>
+  <h1>Vulkan 帧循环入门</h1>
+  <p class="sub">九个概念，每个配一个带动画的小实验和对照阅读。读完你应该能看懂 vkguide 第 1 章和 Vulkan Tutorial 的 Drawing a triangle 在说什么，并且知道自己写帧循环时要回答哪些问题。</p>
+  <div class="chips">
+    <span style="--c:var(--cpu)">CPU：你的程序</span>
+    <span style="--c:var(--gpu)">GPU：驱动替你执行</span>
+    <span style="--c:var(--pe)">呈现引擎：系统合成器与显示器</span>
+    <span style="--c:var(--gl)">和 OpenGL 的对比</span>
+  </div>
+</header>
+
+<p class="note"><b>这份教材故意不讲的内容：</b><code>FrameData</code> 怎么设计、一帧里同步对象怎么编排、barrier 的 stage 和 access 填什么、同步流程图。这些是 Task 01 要你独立完成的部分。每章末尾的问题请合上教材回答，答不出就回去读或来问。</p>
+
+<nav aria-label="章节">
+  <a href="#c0">0 一帧的全貌</a><a href="#c1">1 对象链</a><a href="#c2">2 命令缓冲</a><a href="#c3">3 两条时间线</a><a href="#c4">4 Swapchain</a><a href="#c5">5 Layout 与附件</a><a href="#c6">6 Pipeline barrier</a><a href="#c7">7 窗口尺寸</a><a href="#c8">8 读 Validation</a>
+</nav>
+
+<h3>如果你学过 OpenGL</h3>
+<p>OpenGL 和 Vulkan 驱动的是同一块 GPU，要做的事情一样多。区别在于谁来做：OpenGL 的驱动替你管理命令缓冲、同步、资源状态和窗口缓冲，Vulkan 把这些全部交还给你。所以本教材的每个概念在 OpenGL 里几乎都有对应物，只是多数藏在驱动里。每章有一个黄色标记的对比表，帮你把新概念挂到已有的认识上。</p>
+<h3>两份教程怎么搭配读</h3>
+<p>本仓库的主线是 vkguide。Vulkan Tutorial 是很好的第二视角，因为它不用辅助库，把每个结构体都摊开写。但它和本仓库有四处路线不同，读的时候按下表换算。</p>
+<div class="tw"><table>
+  <tr><th>主题</th><th>Vulkan Tutorial</th><th>本仓库</th><th>读的时候注意</th></tr>
+  <tr><td>窗口</td><td>GLFW</td><td>SDL3</td><td>扩展查询和 surface 创建的函数不同，概念相同</td></tr>
+  <tr><td>初始化</td><td>手写全部结构体</td><td>vk-bootstrap</td><td>Tutorial 展示的正是 vk-bootstrap 替你做的事，适合用来读懂第 1 章</td></tr>
+  <tr><td>渲染目标</td><td>render pass + framebuffer</td><td>dynamic rendering</td><td>跳过 Render passes 和 Framebuffers 两篇的实现，只看附件概念</td></tr>
+  <tr><td>layout 转换</td><td>render pass 的 <code>initialLayout</code> / <code>finalLayout</code> 自动完成</td><td>自己写 barrier</td><td>Tutorial 的清屏程序里看不到 barrier，不代表不需要</td></tr>
+</table></div>
+
+<!-- ============ 0 ============ -->
+<h2 id="c0"><span class="n">00</span>一帧的全貌</h2>
+<p>先看整体。画一帧涉及三方：你的程序、GPU、呈现引擎。README 把这个过程概括成 acquire → record → submit → present。点“播放”看一帧在三方之间怎么流转。</p>
+<figure>
+  <div class="scroll"><svg class="flow" viewBox="0 0 720 230" style="min-width:620px;width:100%;height:auto" role="img" aria-label="一帧在 CPU、GPU、呈现引擎三条泳道间的流转：acquire、录制、submit、GPU 执行、present、上屏，然后 image 归还">
+    <defs><marker id="fa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted);stroke:none"/></marker></defs>
+    <line class="lane" x1="90" y1="50" x2="710" y2="50"/><line class="lane" x1="90" y1="120" x2="710" y2="120"/><line class="lane" x1="90" y1="190" x2="710" y2="190"/>
+    <text class="ll" x="8" y="54" style="fill:var(--cpu)">CPU</text><text class="ll" x="8" y="124" style="fill:var(--gpu)">GPU</text><text class="ll" x="8" y="194" style="fill:var(--pe)">呈现引擎</text>
+    <line x1="150" y1="172" x2="150" y2="70" marker-end="url(#fa)"/><text class="lab" x="156" y="126">借出</text>
+    <line x1="200" y1="50" x2="228" y2="50" marker-end="url(#fa)"/><line x1="330" y1="50" x2="358" y2="50" marker-end="url(#fa)"/>
+    <line x1="430" y1="68" x2="478" y2="100" marker-end="url(#fa)"/><line x1="460" y1="50" x2="488" y2="50" marker-end="url(#fa)"/>
+    <line x1="570" y1="68" x2="626" y2="170" marker-end="url(#fa)"/>
+    <path d="M640,208 C640,226 150,226 150,210" marker-end="url(#fa)"/><text class="lab" x="395" y="218" text-anchor="middle">下次刷新后归还</text>
+    <g id="f0"><rect x="100" y="172" width="100" height="36" rx="4"/><text x="150" y="195" text-anchor="middle">可借的 image</text></g>
+    <g id="f1"><rect x="100" y="32" width="100" height="36" rx="4"/><text x="150" y="55" text-anchor="middle">① acquire</text></g>
+    <g id="f2"><rect x="230" y="32" width="100" height="36" rx="4"/><text x="280" y="55" text-anchor="middle">② 录制命令</text></g>
+    <g id="f3"><rect x="360" y="32" width="100" height="36" rx="4"/><text x="410" y="55" text-anchor="middle">③ submit</text></g>
+    <g id="f4"><rect x="450" y="102" width="110" height="36" rx="4"/><text x="505" y="125" text-anchor="middle">④ 执行命令</text></g>
+    <g id="f5"><rect x="490" y="32" width="100" height="36" rx="4"/><text x="540" y="55" text-anchor="middle">⑤ present</text></g>
+    <g id="f6"><rect x="590" y="172" width="100" height="36" rx="4"/><text x="640" y="195" text-anchor="middle">⑥ 上屏</text></g>
+    <circle id="tok" r="7" cx="0" cy="0"/>
+  </svg></div>
+  <div class="row"><button id="fl-play">播放</button><button id="fl-next">下一步</button></div>
+  <div class="msg" id="fl-msg" aria-live="polite"></div>
+  <figcaption>红点是这一帧用的那张 image。图里一条等待关系都没画：哪些步骤之间必须有先后保证、用什么保证，是你在 <code>docs/task01-sync.md</code> 里要补上的内容。</figcaption>
+</figure>
+
+<div class="gl"><h3>和 OpenGL 对比</h3><p>OpenGL 的一帧是 <code>glClear</code>、若干 draw call、<code>SwapBuffers</code>。上图的六步在 OpenGL 里全都发生了，只是其中大部分由驱动代办。</p><div class="tw"><table><tr><th>Vulkan</th><th>OpenGL 里对应什么</th><th>关键差别</th></tr><tr><td>① acquire</td><td>没有。back buffer 永远是当前可画的那张</td><td>你拿不到也不需要编号</td></tr><tr><td>② 录制、③ submit</td><td>直接调用 <code>gl*</code> 函数</td><td>驱动内部同样在攒命令，只是不让你看见</td></tr><tr><td>④ GPU 执行</td><td>同样异步执行</td><td><code>glDraw*</code> 返回时 GPU 通常还没画</td></tr><tr><td>⑤ present、⑥ 上屏</td><td><code>SwapBuffers</code>（SDL 里是 <code>SDL_GL_SwapWindow</code>）</td><td>一个调用同时完成归还和借下一张</td></tr><tr><td>步骤之间的等待关系</td><td>驱动隐式保证</td><td>Vulkan 里由你显式声明</td></tr></table></div></div>
+<!-- ============ 1 ============ -->
+<h2 id="c1"><span class="n">01</span>从程序到屏幕要经过哪些对象</h2>
+<p>Unity 和 UE 把这条链藏在引擎里。Vulkan 要求你一个一个建出来，后一个依赖前一个。点“逐个创建”看顺序，再点每个对象看它管什么，以及它在 OpenGL 里对应什么。</p>
+<figure>
+  <div class="chain" id="chain"></div>
+  <div class="row"><button id="ch-build">逐个创建</button><button id="ch-destroy">逐个销毁</button></div>
+  <dl class="detail" id="objd"></dl>
+  <figcaption>创建顺序从左到右，销毁顺序相反。这部分代码在 <code>src/core/VulkanContext.cpp</code>，属于 agent 可生成的样板，你的任务是逐行读懂并加注释。</figcaption>
+</figure>
+<h3>Vulkan 创建对象的固定套路</h3>
+<p>几乎每个对象都按同一个模式创建：填一个 <code>Vk…CreateInfo</code> 结构体，调用 <code>vkCreate…</code>，拿回一个句柄。结构体里有两个固定字段：<code>sType</code> 标明结构体类型，<code>pNext</code> 用来挂扩展结构体。本仓库开启 1.3 特性时用的 <code>VkPhysicalDeviceVulkan13Features</code> 就是这样挂上去的。Vulkan Tutorial 把这些结构体全部手写了一遍，vk-bootstrap 的 builder 是在替你填它们。</p>
+<h3>几个容易混的词</h3>
+<div class="tw"><table>
+  <tr><th>词</th><th>含义</th></tr>
+  <tr><td>extension</td><td>核心规范之外的功能。分 instance 级（如 surface 相关）和 device 级（如 swapchain）</td></tr>
+  <tr><td>layer</td><td>插在你的程序和驱动之间的拦截层。validation layer 检查你的每次调用是否符合规范，发布时关闭</td></tr>
+  <tr><td>queue family</td><td>一组能力相同的 queue。每个族支持 graphics、compute、transfer、present 中的若干种</td></tr>
+  <tr><td>present mode</td><td>呈现引擎换图的策略。<code>FIFO</code> 等垂直同步、必定支持；<code>MAILBOX</code> 用新图替换排队中的旧图；<code>IMMEDIATE</code> 不等，可能撕裂</td></tr>
+</table></div>
+<div class="gl"><h3>和 OpenGL 对比</h3><div class="tw"><table><tr><th>Vulkan</th><th>OpenGL 里对应什么</th><th>关键差别</th></tr><tr><td>Instance + Physical Device + Device</td><td>一个 GL context</td><td>OpenGL 一步创建，Vulkan 拆成三层，每层都能查询和选择</td></tr><tr><td>句柄显式传递</td><td>全局状态机，操作作用于当前 bind 的对象</td><td>Vulkan 没有“当前绑定”，每个函数都要你传入对象</td></tr><tr><td><code>Vk…CreateInfo</code> 一次填完</td><td><code>glGen*</code> 之后多次 <code>glBind*</code>、<code>glTexParameter*</code> 逐项设置</td><td>Vulkan 对象创建后大多不可改</td></tr><tr><td>extension / feature 需显式开启</td><td>扩展存在即可用</td><td>Vulkan 里没开启就使用是错误</td></tr><tr><td>present mode</td><td>swap interval</td><td>见第 4 章</td></tr></table></div></div>
+<div class="ref"><h3>对照阅读</h3><ul>
+  <li>vkguide：<a href="https://vkguide.dev/docs/introduction/vulkan_overview/">Vulkan API 概览</a>、<a href="https://vkguide.dev/docs/new_chapter_1/vulkan_init_flow/">Vulkan Initialization</a>、<a href="https://vkguide.dev/docs/new_chapter_1/vulkan_init_code/">Initialization Code</a></li>
+  <li>Vulkan Tutorial：<a href="https://vulkan-tutorial.com/Overview">Overview</a>、<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Setup/Instance">Instance</a>、<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Setup/Validation_layers">Validation layers</a>、<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Setup/Physical_devices_and_queue_families">Physical devices and queue families</a>、<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Setup/Logical_device_and_queues">Logical device and queues</a>、<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Presentation/Window_surface">Window surface</a></li>
+  <li>视频：TU Wien Vulkan Lecture Series 的 Vulkan Essentials 一讲</li>
+</ul></div>
+<div class="q"><h3>合上教材回答</h3>
+  <ol><li>validation layer 是在哪一级对象上打开的？同步验证呢？</li>
+  <li><code>VulkanContext::shutdown</code> 里各对象的销毁顺序是什么？把其中两行对调会发生什么？</li>
+  <li>swapchain 的 image 和 image view，哪个由你销毁？</li>
+  <li>对照 Vulkan Tutorial 的 Physical devices 一篇，vk-bootstrap 的 selector 替你做了哪几步判断？</li></ol></div>
+
+<!-- ============ 2 ============ -->
+<h2 id="c2"><span class="n">02</span>命令先录下来，之后才执行</h2>
+<p><code>vkCmd*</code> 开头的函数都不会让 GPU 立刻干活，它们只是往 command buffer 里写一条记录。写完后把整个 buffer 提交给 queue，GPU 在之后某个时刻按顺序执行。思路和 Unity 的 <code>CommandBuffer</code>、UE 的 <code>RHICommandList</code> 相同，区别是 Vulkan 要你自己管这块 buffer 的状态。</p>
+<p>录几条命令，end，然后 submit，看 GPU 怎么逐条执行。执行期间试着点 reset 或 begin。</p>
+<figure>
+  <div class="scroll"><svg class="st" viewBox="0 0 720 190" style="min-width:600px;width:100%;height:auto" role="img" aria-label="command buffer 的四个状态：Initial 经 begin 到 Recording，经 end 到 Executable，经 submit 到 Pending，GPU 执行完回到 Executable，reset 回到 Initial">
+    <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted);stroke:none"/></marker></defs>
+    <g id="cb-initial"><rect x="10" y="70" width="130" height="48" rx="5"/><text x="75" y="99" text-anchor="middle">Initial</text></g>
+    <g id="cb-recording"><rect x="200" y="70" width="130" height="48" rx="5"/><text x="265" y="99" text-anchor="middle">Recording</text></g>
+    <g id="cb-executable"><rect x="390" y="70" width="130" height="48" rx="5"/><text x="455" y="99" text-anchor="middle">Executable</text></g>
+    <g id="cb-pending"><rect x="580" y="70" width="130" height="48" rx="5"/><text x="645" y="99" text-anchor="middle">Pending</text></g>
+    <line x1="142" y1="94" x2="197" y2="94" marker-end="url(#ah)"/><text class="lab" x="170" y="86" text-anchor="middle">begin</text>
+    <line x1="332" y1="94" x2="387" y2="94" marker-end="url(#ah)"/><text class="lab" x="360" y="86" text-anchor="middle">end</text>
+    <line x1="522" y1="94" x2="577" y2="94" marker-end="url(#ah)"/><text class="lab" x="550" y="86" text-anchor="middle">submit</text>
+    <path d="M645,120 C645,160 455,160 455,122" marker-end="url(#ah)"/><text class="lab" x="550" y="176" text-anchor="middle">GPU 执行完成</text>
+    <path d="M455,68 C455,22 75,22 75,66" marker-end="url(#ah)"/><text class="lab" x="265" y="26" text-anchor="middle">reset</text>
+  </svg></div>
+  <div class="row">
+    <button class="mono" data-cb="begin">begin</button><button class="mono" data-cb="cmd">vkCmd*（录一条）</button><button class="mono" data-cb="end">end</button>
+    <button class="mono" data-cb="submit">submit</button><button class="mono" data-cb="reset">reset</button>
+  </div>
+  <div class="cmds" id="cb-cmds"></div>
+  <div class="msg" id="cb-msg" aria-live="polite"></div>
+  <figcaption>橙色边框是 CPU 录下的命令，变成青色表示 GPU 已执行。假设 command pool 创建时带了 <code>RESET_COMMAND_BUFFER</code> 标志，所以可以对单个 buffer reset，也可以在 Executable 状态直接 begin（会隐式 reset）。</figcaption>
+</figure>
+<p>图里唯一不由你的代码触发的箭头是 <b>GPU 执行完成</b>。它发生在另一条时间线上，CPU 这边不会自动知道。</p>
+<h3>Command pool</h3>
+<p>command buffer 从 command pool 里分配。pool 管理底层内存，有三条规则值得记住：</p>
+<ul>
+  <li>一个 pool 绑定一个 queue family，从它分配的 buffer 只能提交到这个族的 queue。</li>
+  <li>pool 不是线程安全的。多线程录制时每个线程用自己的 pool。</li>
+  <li>可以 reset 单个 buffer，也可以 reset 整个 pool，后者一次清空它名下所有 buffer。两种都要求相关 buffer 不在 Pending。</li>
+</ul>
+<p>begin 时还可以带 <code>ONE_TIME_SUBMIT</code> 标志，告诉驱动这次录的内容只提交一次。带了这个标志的 buffer 执行完后进入 Invalid 状态，必须 reset 才能再用。</p>
+<div class="gl"><h3>和 OpenGL 对比</h3><div class="tw"><table><tr><th>Vulkan</th><th>OpenGL 里对应什么</th><th>关键差别</th></tr><tr><td>command buffer</td><td>没有用户可见的对应物。<code>gl*</code> 调用看起来立即生效，实际驱动内部也在攒命令</td><td>Vulkan 把这块缓冲交给你管理，所以才有状态机</td></tr><tr><td>submit</td><td><code>glFlush</code>：把攒着的命令推给 GPU</td><td>OpenGL 里通常不用手动调，<code>SwapBuffers</code> 会隐式 flush</td></tr><tr><td>等执行完成</td><td><code>glFinish</code>：阻塞到所有命令执行完</td><td>Vulkan 可以只等某一次提交，见第 3 章</td></tr><tr><td>多线程录制，每线程一个 pool</td><td>一个 context 同一时刻只能在一个线程上 current</td><td>这是 Vulkan 设计 command buffer 的主要动机之一</td></tr><tr><td>command buffer 之间不继承状态</td><td>状态机，设置一次后一直有效</td><td>Vulkan 里每个 buffer 开头都要重新设置 viewport、绑定等状态</td></tr></table></div></div>
+<div class="ref"><h3>对照阅读</h3><ul>
+  <li>vkguide：<a href="https://vkguide.dev/docs/introduction/vulkan_execution/">Vulkan Usage</a>、<a href="https://vkguide.dev/docs/new_chapter_1/vulkan_command_flow/">Executing Vulkan Commands</a>、<a href="https://vkguide.dev/docs/new_chapter_1/vulkan_commands_code/">Setting up Vulkan commands</a></li>
+  <li>Vulkan Tutorial：<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Drawing/Command_buffers">Command buffers</a>。其中 render pass 相关的录制内容换成 dynamic rendering 理解</li>
+  <li>规范：<a href="https://docs.vulkan.org/spec/latest/chapters/cmdbuffers.html">Command Buffers</a> 的 Lifecycle 一节，上图就是它的简化版</li>
+</ul></div>
+<div class="q"><h3>合上教材回答</h3>
+  <ol><li>一个 command buffer 还在 Pending，你想开始录下一帧，有哪些办法？</li>
+  <li>谁能告诉 CPU，某个 command buffer 已经离开 Pending 了？</li>
+  <li>每帧 reset 单个 buffer 和每帧 reset 整个 pool，各适合什么情况？</li></ol></div>
+
+<!-- ============ 3 ============ -->
+<h2 id="c3"><span class="n">03</span>CPU 和 GPU 是两条时间线</h2>
+<p><code>vkQueueSubmit2</code> 立刻返回，它只是把工作放进队列。CPU 录一帧通常比 GPU 画一帧快。下面的模型里 CPU 不停地录制并提交，中间没有任何等待。点“运行”，再把 GPU 耗时调大。</p>
+<figure>
+  <div class="row">
+    <label>GPU 每帧耗时是 CPU 的 <input type="range" id="fa-g" min="0.5" max="4" step="0.5" value="2" style="width:110px"> <b id="fa-gv" style="font-family:var(--mono);color:var(--ink)"></b> 倍</label>
+    <button id="fa-play">运行</button><button id="fa-reset">重置</button>
+  </div>
+  <div class="fac">
+    <div><b class="cpu">CPU：录制并提交</b><span id="fa-cl" style="font-family:var(--mono)"></span><div class="bar" style="--c:var(--cpu)"><i id="fa-cb"></i></div></div>
+    <div><b>queue 里等待执行的帧</b><div class="fq" id="fa-q"></div></div>
+    <div><b class="gpu">GPU：执行</b><span id="fa-gl" style="font-family:var(--mono)"></span><div class="bar"><i id="fa-gb"></i></div></div>
+  </div>
+  <div class="read"><span>已提交 <b id="fa-a"></b> 帧</span><span>已完成 <b id="fa-b"></b> 帧</span><span>屏幕落后 CPU <b id="fa-k"></b> 帧</span></div>
+  <figcaption>倍数大于 1 时，等待执行的帧只增不减，你看到的画面离 CPU 当前状态越来越远。倍数小于等于 1 时不会积压。</figcaption>
+</figure>
+<p>积压只是表面现象。真正先出事的是第 2 章那件事：CPU 回头想复用一个 command buffer 时，它还在 Pending。所以 CPU 必须在某些点上等 GPU，GPU 上的某些工作之间也必须排出先后。Vulkan 为这两种等待各给了一个工具。</p>
+
+<h3>Fence：让 CPU 等 GPU</h3>
+<figure>
+  <div class="kv">
+    <span>fence</span><span class="pill" id="fe-s"></span><span></span>
+    <span class="gpu">GPU</span><span class="pill" id="fe-g"></span><div class="bar"><i id="fe-bar"></i></div>
+    <span class="cpu">CPU</span><span class="pill" id="fe-c"></span><span></span>
+  </div>
+  <div class="row"><button id="fe-sub">提交一批工作，附带这个 fence</button><button id="fe-wait">CPU 等待 fence</button><button id="fe-reset">reset fence</button></div>
+  <div class="msg" id="fe-msg" aria-live="polite"></div>
+  <figcaption>fence 只有 signaled 和 unsignaled 两个状态。提交时附带它，这批工作执行完时由 GPU 把它置为 signaled；CPU 可以用 <code>vkWaitForFences</code> 阻塞等待；变回 unsignaled 要你手动 <code>vkResetFences</code>。创建时可以用 <code>SIGNALED</code> 标志让它一开始就是 signaled。</figcaption>
+</figure>
+
+<h3>Semaphore：让队列里的一件事等另一件事</h3>
+<figure>
+  <div class="kv">
+    <span>工作 A（完成时 signal S）</span><span class="pill" id="se-a"></span><div class="bar"><i id="se-abar"></i></div>
+    <span>semaphore S</span><span class="pill" id="se-s"></span><span></span>
+    <span>工作 B（开始前 wait S）</span><span class="pill" id="se-b"></span><div class="bar"><i id="se-bbar"></i></div>
+  </div>
+  <div class="row"><button id="se-sa">提交 A</button><button id="se-sb">提交 B</button><button id="se-reset">重置</button></div>
+  <div class="msg" id="se-msg" aria-live="polite"></div>
+  <figcaption>先提交 B 再提交 A 试试。两次提交都立刻返回，CPU 没有参与等待。B 等到 S 之后，S 自动变回 unsignaled，所以一次 signal 只能放行一次 wait。</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th></th><th>Fence</th><th>Binary semaphore</th></tr>
+  <tr><td>谁在等</td><td class="cpu">CPU</td><td class="gpu">队列里的操作</td></tr>
+  <tr><td>谁 signal</td><td>一次 submit 完成；acquire 也可以</td><td>一次 submit 完成；acquire 也可以</td></tr>
+  <tr><td>怎么复位</td><td>手动 reset</td><td>被 wait 之后自动复位</td></tr>
+  <tr><td>CPU 能查询或等待吗</td><td>能</td><td>不能</td></tr>
+</table></div>
+<h3>一次 submit 能带什么</h3>
+<p><code>VkSubmitInfo2</code> 有三个列表：开始前要 wait 的 semaphore、要执行的 command buffer、完成后要 signal 的 semaphore。每个 wait 的 semaphore 还带一个 stage mask，表示命令执行到哪个阶段才需要等它。<code>vkQueueSubmit2</code> 另外接受一个 fence 参数。</p>
+<p>再记三个 API 事实，编排留给你：</p>
+<ul>
+  <li><code>vkAcquireNextImageKHR</code> 可以带一个 semaphore 或 fence，image 真正可用时才 signal。函数返回编号时 image 不一定已经可用。</li>
+  <li><code>vkQueuePresentKHR</code> 可以指定若干 semaphore，等它们 signal 后才呈现。</li>
+  <li><code>vkDeviceWaitIdle</code> 会阻塞到这个 device 上所有 queue 的工作都执行完。它简单可靠，代价是整个程序停顿，不适合每帧调用。</li>
+</ul>
+<p>Vulkan 1.2 起还有 timeline semaphore，Task 01 用不到，知道存在即可。</p>
+<div class="gl"><h3>和 OpenGL 对比</h3><p>上面的积压模型在 OpenGL 里你从没遇到过，原因是驱动一直在替你等。</p><div class="tw"><table><tr><th>Vulkan</th><th>OpenGL 里对应什么</th><th>关键差别</th></tr><tr><td>Fence</td><td>sync object：<code>glFenceSync</code> 创建，<code>glClientWaitSync</code> 等待（GL 3.2）</td><td>概念几乎相同，但 OpenGL 里很少有必须用它的场合</td></tr><tr><td><code>vkDeviceWaitIdle</code></td><td><code>glFinish</code></td><td>都是全停等待</td></tr><tr><td>Semaphore</td><td>没有。命令严格按调用顺序生效，先后由驱动保证</td><td>Vulkan 里 acquire、submit、present 是独立操作，彼此的先后要你声明</td></tr><tr><td>CPU 跑得比 GPU 快</td><td>驱动通常会限制排队的帧数，<code>SwapBuffers</code> 在必要时阻塞</td><td>Vulkan 里这个节流由你负责</td></tr><tr><td>复用 GPU 还在用的资源</td><td>驱动替你处理：等待，或者悄悄换一份新的存储</td><td>Vulkan 里是未定义行为，validation 会报错</td></tr></table></div></div>
+<div class="ref"><h3>对照阅读</h3><ul>
+  <li>vkguide：<a href="https://vkguide.dev/docs/new_chapter_1/vulkan_mainloop/">Rendering Loop</a>、<a href="https://vkguide.dev/docs/new_chapter_1/vulkan_mainloop_code/">Mainloop Code</a></li>
+  <li>Vulkan Tutorial：<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Drawing/Rendering_and_presentation">Rendering and presentation</a>，其中 Synchronization、Semaphores、Fences 三小节把这两个工具讲得很细；接着读 <a href="https://vulkan-tutorial.com/Drawing_a_triangle/Drawing/Frames_in_flight">Frames in flight</a></li>
+  <li>Khronos：<a href="https://www.khronos.org/blog/understanding-vulkan-synchronization">Understanding Vulkan Synchronization</a>、<a href="https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html">Swapchain Semaphore Reuse</a></li>
+  <li>视频：TU Wien 第 7 讲 Synchronization</li>
+</ul></div>
+<p class="note">两份教程在这一节都给出了完整的帧循环代码。读懂思路后请合上，自己从空白写。口试会问到教程没有解释的复用条件。</p>
+<div class="q"><h3>合上教材回答</h3>
+  <ol><li>回到第 0 章的图。六个步骤之间有几处“这件事必须先于那件事”？每一处的两件事分别发生在哪条泳道上？</li>
+  <li>对每一处，该用 fence 还是 semaphore？依据是上面表格的哪一行？</li>
+  <li>一个 semaphore 被 signal 了但没人 wait，下次再拿它去用会怎样？去读 Swapchain Semaphore Reuse 核对。</li>
+  <li>fence 创建时带不带 <code>SIGNALED</code> 标志，对你的第一帧有什么影响？</li></ol></div>
+
+<!-- ============ 4 ============ -->
+<h2 id="c4"><span class="n">04</span>Swapchain 的 image 在两个主人之间轮转</h2>
+<p>swapchain 是几张固定的 image。每张在任一时刻要么归呈现引擎，要么归你的程序。你用 acquire 借一张出来，画完用 present 还回去，呈现引擎在下一次垂直同步时把它换上屏幕。</p>
+<p>下面是 FIFO 模式的简化模型。手动操作：点 acquire 借图，点橙色的图把它 present，点 vblank 让屏幕刷新。也可以点“自动演示”看它循环。</p>
+<figure>
+  <div class="row"><button id="sc-acq" class="mono">vkAcquireNextImageKHR</button><button id="sc-vb">vblank（屏幕刷新）</button><button id="sc-auto">自动演示</button><button id="sc-reset">重置</button></div>
+  <div class="swap"><div class="imgs" id="sc-imgs"></div><div class="mon" id="sc-mon"><small>屏幕</small><b id="sc-monb">–</b></div></div>
+  <div class="read"><span>返回的 imageIndex 序列 <b id="sc-log"></b></span></div>
+  <div class="msg" id="sc-msg" aria-live="polite"></div>
+  <figcaption>虚线框：归呈现引擎，可以被 acquire。橙色：归你，点击即 present。浅紫：已 present，等待上屏。深紫：正在显示。真实驱动返回哪一张由它自己决定，规范不保证顺序。</figcaption>
+</figure>
+<h3>acquire 和 present 的返回值</h3>
+<div class="tw"><table>
+  <tr><th>返回值</th><th>含义</th></tr>
+  <tr><td><code>VK_SUCCESS</code></td><td>正常</td></tr>
+  <tr><td><code>VK_SUBOPTIMAL_KHR</code></td><td>操作成功了，但 swapchain 和 surface 已经不完全匹配，还能用</td></tr>
+  <tr><td><code>VK_ERROR_OUT_OF_DATE_KHR</code></td><td>swapchain 和 surface 不兼容了，不能再用它呈现，必须重建</td></tr>
+  <tr><td><code>VK_TIMEOUT</code> / <code>VK_NOT_READY</code></td><td>仅 acquire：在给定超时内没有可用的 image</td></tr>
+</table></div>
+<p>注意 <code>SUBOPTIMAL</code> 是成功码。acquire 返回它时，image 已经借到手，附带的 semaphore 也会被 signal。这一点会影响你怎么处理它。</p>
+<div class="gl"><h3>和 OpenGL 对比</h3><div class="tw"><table><tr><th>Vulkan</th><th>OpenGL 里对应什么</th><th>关键差别</th></tr><tr><td>swapchain 的若干 image</td><td>front buffer 和 back buffer</td><td>OpenGL 里你不知道有几张，也拿不到编号</td></tr><tr><td>acquire + present</td><td><code>SwapBuffers</code></td><td>一个调用完成两件事</td></tr><tr><td>present mode</td><td>swap interval：<code>SDL_GL_SetSwapInterval(1)</code> 近似 FIFO，<code>0</code> 近似 IMMEDIATE，<code>-1</code> 自适应近似 FIFO_RELAXED</td><td>OpenGL 可以运行时切换，Vulkan 要重建 swapchain</td></tr><tr><td>再次借到的 image 内容不保证保留</td><td><code>SwapBuffers</code> 之后 back buffer 内容同样未定义</td><td>所以两边都习惯每帧先清屏</td></tr><tr><td><code>OUT_OF_DATE</code> / <code>SUBOPTIMAL</code></td><td>没有。default framebuffer 自动跟随窗口</td><td>见第 7 章</td></tr></table></div></div>
+<div class="ref"><h3>对照阅读</h3><ul>
+  <li>Vulkan Tutorial：<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Presentation/Swap_chain">Swap chain</a>（format、present mode、extent 三项选择讲得最清楚）、<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Presentation/Image_views">Image views</a></li>
+  <li>vkguide：<a href="https://vkguide.dev/docs/new_chapter_1/vulkan_init_code/">Initialization Code</a> 的 swapchain 部分</li>
+  <li>规范：<a href="https://docs.vulkan.org/spec/latest/chapters/VK_KHR_surface/wsi.html">WSI / Swapchain</a></li>
+  <li>视频：TU Wien 的 Swap Chain 一讲</li>
+</ul></div>
+<div class="q"><h3>合上教材回答</h3>
+  <ol><li>做十轮 acquire、present、vblank，把 index 序列抄下来。它和“这是第几帧”是什么关系？</li>
+  <li>你的程序里哪些东西是每张 swapchain image 一份，哪些是每帧一份？各用哪个编号去取？</li>
+  <li>四张图都不在虚线框里时，acquire 会怎样？你的帧循环要怎么应对？</li>
+  <li>acquire 返回 <code>SUBOPTIMAL</code> 和 <code>OUT_OF_DATE</code> 时，手里的 semaphore 分别处于什么状态？</li></ol></div>
+
+<!-- ============ 5 ============ -->
+<h2 id="c5"><span class="n">05</span>Image layout 与 dynamic rendering 的附件</h2>
+<p>同一张 image 在不同用途下，GPU 内部的存储和访问方式可以不同。Vulkan 用 <b>layout</b> 标记它当前适合哪种用途，每种操作都规定了 image 必须处于哪些 layout。切换 layout 靠一条录进 command buffer 的 barrier 命令，第 6 章专门讲它。</p>
+<div class="tw"><table>
+  <tr><th>layout</th><th>适合的用途</th></tr>
+  <tr><td><code>UNDEFINED</code></td><td>初始状态。不能用于任何访问，只能作为转换的起点</td></tr>
+  <tr><td><code>COLOR_ATTACHMENT_OPTIMAL</code></td><td>作为颜色附件被渲染</td></tr>
+  <tr><td><code>TRANSFER_SRC_OPTIMAL</code> / <code>TRANSFER_DST_OPTIMAL</code></td><td>作为拷贝、blit、clear 命令的源或目标</td></tr>
+  <tr><td><code>SHADER_READ_ONLY_OPTIMAL</code></td><td>被 shader 采样。Task 03 开始用到</td></tr>
+  <tr><td><code>PRESENT_SRC_KHR</code></td><td>交给呈现引擎显示</td></tr>
+  <tr><td><code>GENERAL</code></td><td>允许几乎所有用途，驱动无法针对某一种优化</td></tr>
+</table></div>
+<p>下面这张 swapchain image 刚创建出来。先试着直接使用它，再试着切换 layout 后使用。</p>
+<figure>
+  <div class="read"><span>当前 layout <b id="ly-l"></b></span><span>归属 <b id="ly-h"></b></span></div>
+  <div class="row"><span style="font-size:.85rem;color:var(--muted)">用 barrier 转到</span>
+    <button class="mono" data-ly="COLOR_ATTACHMENT_OPTIMAL">COLOR_ATTACHMENT_OPTIMAL</button><button class="mono" data-ly="TRANSFER_DST_OPTIMAL">TRANSFER_DST_OPTIMAL</button><button class="mono" data-ly="PRESENT_SRC_KHR">PRESENT_SRC_KHR</button><button class="mono" data-ly="GENERAL">GENERAL</button></div>
+  <div class="row"><span style="font-size:.85rem;color:var(--muted)">使用它</span>
+    <button data-use="render">作为颜色附件渲染</button><button data-use="clear" class="mono">vkCmdClearColorImage</button><button data-use="present" class="mono">vkQueuePresentKHR</button><button id="ly-re">再次 acquire 到它</button></div>
+  <div class="msg" id="ly-msg" aria-live="polite"></div>
+  <figcaption>swapchain image 第一次拿到时是 <code>UNDEFINED</code>。barrier 里的 <code>oldLayout</code> 填 <code>UNDEFINED</code> 总是合法的，含义是旧内容可以丢弃。</figcaption>
+</figure>
+<h3>一条 image barrier 里有什么</h3>
+<p><code>VkImageMemoryBarrier2</code> 的字段分三组。前两组你已经有概念了，第三组是你的作业。</p>
+<div class="tw"><table>
+  <tr><th>字段</th><th>回答的问题</th></tr>
+  <tr><td><code>image</code>、<code>subresourceRange</code></td><td>哪张图的哪些 mip 和 layer</td></tr>
+  <tr><td><code>oldLayout</code>、<code>newLayout</code></td><td>从什么 layout 转到什么 layout</td></tr>
+  <tr><td><code>srcStageMask</code>、<code>srcAccessMask</code>、<code>dstStageMask</code>、<code>dstAccessMask</code></td><td>这次转换要排在哪些已有访问之后、哪些后续访问之前。第 6 章讲它们各自约束什么。具体填什么值是你的作业</td></tr>
+  <tr><td><code>srcQueueFamilyIndex</code>、<code>dstQueueFamilyIndex</code></td><td>是否在 queue family 之间转移所有权。Task 01 不转移</td></tr>
+</table></div>
+
+<h3>Dynamic rendering：开始渲染时怎么对待附件</h3>
+<p>Vulkan 1.3 的 <code>vkCmdBeginRendering</code> 直接指定这次要画到哪些 image view 上。每个附件要说明两件事：开始时怎么处理已有内容（<code>loadOp</code>），结束时要不要保留结果（<code>storeOp</code>）。</p>
+<figure>
+  <div class="row">
+    <label>loadOp <select id="lo-load"><option>CLEAR</option><option>LOAD</option><option>DONT_CARE</option></select></label>
+    <label>storeOp <select id="lo-store"><option>STORE</option><option>DONT_CARE</option></select></label>
+    <label>clear 颜色 <input type="color" id="lo-col" value="#1f3a5f"></label>
+  </div>
+  <div class="tiles">
+    <div><span>渲染前，附件里留着的内容</span><svg viewBox="0 0 160 100" role="img" aria-label="渲染前的内容：灰底上一个圆"><rect width="160" height="100" fill="#8a94a3"/><circle cx="50" cy="52" r="26" fill="#e9c46a"/></svg></div>
+    <div><span>画一个三角形并结束渲染后</span><svg viewBox="0 0 160 100" id="lo-out" role="img" aria-label="渲染后的内容"></svg></div>
+  </div>
+  <div class="msg" id="lo-msg" aria-live="polite"></div>
+  <figcaption>清屏不是一条单独的绘制命令，它是附件 <code>loadOp</code> 的一种取值。<code>DONT_CARE</code> 的结果是未定义的，图里用问号表示。</figcaption>
+</figure>
+<h3>和 Vulkan Tutorial 的旧式写法对照</h3>
+<div class="tw"><table>
+  <tr><th>要表达的事</th><th>render pass 写法（Tutorial）</th><th>dynamic rendering（本仓库）</th></tr>
+  <tr><td>有哪些附件、格式是什么</td><td><code>VkRenderPass</code> 对象，提前创建</td><td>不需要对象。格式到 Task 02 建 pipeline 时再声明</td></tr>
+  <tr><td>画到哪几张 image view</td><td><code>VkFramebuffer</code>，每张 swapchain image 建一个，resize 时重建</td><td><code>VkRenderingAttachmentInfo</code> 里直接填 image view</td></tr>
+  <tr><td>loadOp / storeOp / clear 值</td><td>写在 render pass 的附件描述里</td><td>写在 <code>VkRenderingAttachmentInfo</code> 里</td></tr>
+  <tr><td>layout 转换</td><td><code>initialLayout</code> / <code>finalLayout</code>，驱动自动转</td><td>自己录 barrier</td></tr>
+  <tr><td>开始和结束</td><td><code>vkCmdBeginRenderPass</code> / <code>vkCmdEndRenderPass</code></td><td><code>vkCmdBeginRendering</code> / <code>vkCmdEndRendering</code></td></tr>
+</table></div>
+<div class="gl"><h3>和 OpenGL 对比</h3><div class="tw"><table><tr><th>Vulkan</th><th>OpenGL 里对应什么</th><th>关键差别</th></tr><tr><td>image layout</td><td>没有。驱动内部跟踪每张纹理当前的用途并自动转换</td><td>同样的转换在 OpenGL 里也发生，只是你看不到</td></tr><tr><td>barrier</td><td>多数情况没有。最近的亲戚是 <code>glMemoryBarrier</code>（GL 4.2），用于 compute 或 image load/store 写入之后</td><td>OpenGL 只在驱动无法自动推断时才要你写</td></tr><tr><td>渲染到 swapchain image</td><td>渲染到 default framebuffer（FBO 0）</td><td></td></tr><tr><td><code>vkCmdBeginRendering</code> 指定附件</td><td><code>glBindFramebuffer</code>，附件事先用 <code>glFramebufferTexture2D</code> 挂好</td><td>FBO 更接近旧式的 <code>VkFramebuffer</code></td></tr><tr><td><code>loadOp = CLEAR</code></td><td><code>glClear</code></td><td>OpenGL 里清屏是一条命令，Vulkan 里是附件的属性</td></tr><tr><td><code>loadOp = LOAD</code></td><td>不调用 <code>glClear</code></td><td></td></tr><tr><td><code>DONT_CARE</code></td><td><code>glInvalidateFramebuffer</code>（GL 4.3）</td><td>在移动端 GPU 上两者的意义相同：省掉一次读回或写回</td></tr><tr><td>layout 不符合用途</td><td>同一张纹理既是附件又被采样（feedback loop），结果未定义</td><td>Vulkan 的 layout 规则让这类错误能被 validation 发现</td></tr></table></div></div>
+<div class="ref"><h3>对照阅读</h3><ul>
+  <li>Khronos：<a href="https://docs.vulkan.org/samples/latest/samples/extensions/dynamic_rendering/README.html">Dynamic Rendering 示例说明</a></li>
+  <li>Vulkan Tutorial：<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Graphics_pipeline_basics/Render_passes">Render passes</a> 只读附件描述和 loadOp / storeOp 的解释；<a href="https://vulkan-tutorial.com/Texture_mapping/Images">Texture mapping / Images</a> 的 Layout transitions 一节有手写 barrier 的讲解，用的是旧版 API，概念通用</li>
+  <li>博客：themaister 的 <a href="https://themaister.net/blog/2019/08/14/yet-another-blog-explaining-vulkan-synchronization/">Yet another blog explaining Vulkan synchronization</a></li>
+  <li>规范：<a href="https://docs.vulkan.org/spec/latest/chapters/synchronization.html">Synchronization</a></li>
+</ul></div>
+<div class="q"><h3>合上教材回答</h3>
+  <ol><li>你的一帧里，swapchain image 会依次用于哪几种用途？所以至少要转换几次 layout？</li>
+  <li>每次转换应该录在 command buffer 的什么位置，相对于 begin / end rendering？</li>
+  <li>Task 01 只做清屏。<code>loadOp</code> 和 <code>storeOp</code> 各该选什么，为什么？</li>
+  <li>Vulkan Tutorial 的三角形程序没有写任何 barrier，它的 layout 转换是在哪里发生的？</li></ol></div>
+
+<!-- ============ 6 ============ -->
+<h2 id="c6"><span class="n">06</span>Pipeline barrier：给 GPU 上的访问排先后</h2>
+<p>第 3 章的 fence 和 semaphore 管的是“一次提交”和“另一次提交”之间的先后。但在同一个 command buffer 内部，命令之间也有先后问题，这归 pipeline barrier 管。</p>
+<p>名字里的 pipeline 指的是：每条命令在 GPU 上要流过若干<b>阶段</b>（stage）。一次 draw 依次经过顶点输入、顶点着色器、片元着色器、颜色附件输出等阶段；一次 compute dispatch 只有 compute shader 一个阶段；一次拷贝属于 transfer 阶段。你录制命令的顺序是确定的，但 GPU 为了效率会让相邻命令重叠执行：前一条还在后面的阶段，后一条已经进入前面的阶段。如果两条命令碰了同一块资源，结果就取决于时序。</p>
+<p>barrier 是录在两条命令之间的一条声明：<b>它之前的命令在某些阶段做的某些访问，必须先于它之后的命令在某些阶段做的某些访问</b>。</p>
+
+<h3>实验：barrier 的 stage 写在哪里才对</h3>
+<p>下面的例子和 Task 01 的清屏无关，是特意选的：命令 A 用 compute shader 往一块 buffer 里写数据，命令 B 是一次 draw，它的顶点着色器要读这块 buffer。选不同的 barrier 参数，点“运行”。</p>
+<figure>
+  <div class="row">
+    <label>srcStageMask <select id="pb-src"><option>COMPUTE_SHADER</option><option>NONE</option></select></label>
+    <label>dstStageMask <select id="pb-dst"><option value="-1">（不写 barrier）</option><option value="0">VERTEX_INPUT</option><option value="1" selected>VERTEX_SHADER</option><option value="2">FRAGMENT_SHADER</option><option value="3">COLOR_ATTACHMENT_OUTPUT</option></select></label>
+    <button id="pb-run">运行</button>
+  </div>
+  <div class="pbrow">
+    <span>命令 A：compute 写 buffer</span>
+    <div class="pb"><span id="pb-a">COMPUTE_SHADER<br><small>写 buffer</small></span><div class="bar" style="align-self:center"><i id="pb-abar"></i></div></div>
+    <span>命令 B：draw</span>
+    <div class="pb" id="pb-b"></div>
+  </div>
+  <div class="msg" id="pb-msg" aria-live="polite"></div>
+  <figcaption>青色实心：正在执行的阶段。青色边框：已完成。橙色：被 barrier 拦住，在等。这是按规范语义画的简化模型，真实 GPU 的调度粒度没有这么细，但你能依赖的保证就是这些。</figcaption>
+</figure>
+<p>把五种 dst 选项和两种 src 选项都试一遍，你应该能总结出选 stage 的原则。提示：有的组合结果正确但等得比必要的早，有的组合看起来写了 barrier 其实什么都没拦住。</p>
+
+<h3>一条 barrier 同时做三件事</h3>
+<div class="tw"><table>
+  <tr><th>作用</th><th>由哪些字段表达</th><th>含义</th></tr>
+  <tr><td>执行依赖</td><td><code>srcStageMask</code> → <code>dstStageMask</code></td><td>之前的命令的 src 阶段执行完，之后的命令的 dst 阶段才能开始。约束的是<b>时间</b></td></tr>
+  <tr><td>内存依赖</td><td><code>srcAccessMask</code> → <code>dstAccessMask</code></td><td>src 阶段里这种访问写下的数据，要对 dst 阶段里那种访问可见。约束的是<b>数据</b>：GPU 有缓存，执行完不等于写到了后续阶段能看到的地方</td></tr>
+  <tr><td>layout 转换</td><td><code>oldLayout</code> → <code>newLayout</code></td><td>仅 image。转换发生在 src 访问之后、dst 访问之前。转换本身算一次对 image 的读写</td></tr>
+</table></div>
+<p>stage 和 access 必须配对才有意义：access 说的是“在这个 stage 里做的哪一种访问”。只写 stage 不写 access，等于只排了时间，没保证数据可见。access 填了某个 stage 根本做不出来的访问类型，validation 会报错。</p>
+
+<h3>常见的 stage 和 access</h3>
+<p>下面是 synchronization2 版本的常用标志，前缀分别是 <code>VK_PIPELINE_STAGE_2_</code> 和 <code>VK_ACCESS_2_</code>。这张表只说明每个标志代表什么，不告诉你哪条 barrier 该用哪个。</p>
+<div class="tw"><table>
+  <tr><th>stage</th><th>这个阶段在做什么</th><th>在这里可能发生的 access</th></tr>
+  <tr><td><code>NONE</code></td><td>不指任何阶段。作 src 表示之前没有需要等的东西，作 dst 表示之后没有命令依赖它</td><td><code>NONE</code></td></tr>
+  <tr><td><code>VERTEX_INPUT</code></td><td>读取 vertex / index buffer</td><td><code>VERTEX_ATTRIBUTE_READ</code>、<code>INDEX_READ</code></td></tr>
+  <tr><td><code>VERTEX_SHADER</code></td><td>顶点着色器执行</td><td><code>SHADER_READ</code>、<code>UNIFORM_READ</code> 等</td></tr>
+  <tr><td><code>EARLY_FRAGMENT_TESTS</code> / <code>LATE_FRAGMENT_TESTS</code></td><td>片元着色器前后的深度模板测试；深度附件的 load 和 store 也发生在这里</td><td><code>DEPTH_STENCIL_ATTACHMENT_READ</code> / <code>WRITE</code></td></tr>
+  <tr><td><code>FRAGMENT_SHADER</code></td><td>片元着色器执行</td><td><code>SHADER_READ</code>（含采样纹理）</td></tr>
+  <tr><td><code>COLOR_ATTACHMENT_OUTPUT</code></td><td>颜色写入附件、混合；颜色附件的 load（含 clear）和 store 也发生在这里</td><td><code>COLOR_ATTACHMENT_READ</code> / <code>WRITE</code></td></tr>
+  <tr><td><code>COMPUTE_SHADER</code></td><td>compute shader 执行</td><td><code>SHADER_READ</code> / <code>SHADER_WRITE</code></td></tr>
+  <tr><td><code>COPY</code>、<code>BLIT</code>、<code>CLEAR</code>、<code>ALL_TRANSFER</code></td><td>拷贝、blit、<code>vkCmdClear*</code> 命令</td><td><code>TRANSFER_READ</code> / <code>TRANSFER_WRITE</code></td></tr>
+  <tr><td><code>ALL_GRAPHICS</code>、<code>ALL_COMMANDS</code></td><td>所有图形阶段、所有阶段的简写</td><td>任意。写起来省事，代价是等得比必要的多</td></tr>
+</table></div>
+
+<h3>作用范围和调用形式</h3>
+<ul>
+  <li>barrier 只在<b>同一个 queue</b> 内有效。src 一侧覆盖这条 barrier 之前提交到该 queue 的命令，dst 一侧覆盖它之后的命令，不限于同一个 command buffer。</li>
+  <li>跨 queue 或者和呈现引擎之间的先后，barrier 管不了，要靠 semaphore。</li>
+  <li><code>vkCmdPipelineBarrier2</code> 接受一个 <code>VkDependencyInfo</code>，里面有三个数组：全局的 memory barrier、针对 buffer 的、针对 image 的。只有 image barrier 带 layout 字段。</li>
+  <li>barrier 不能录在 <code>vkCmdBeginRendering</code> 和 <code>vkCmdEndRendering</code> 之间（少数特殊情况除外，Task 01 遇不到）。</li>
+</ul>
+<p>旧版的 <code>vkCmdPipelineBarrier</code> 把 stage 作为整条命令的参数，access 放在每个 barrier 结构体里。Vulkan Tutorial 用的是旧版。synchronization2 把 stage 和 access 放到了同一个结构体里，语义没变。</p>
+
+<div class="gl"><h3>和 OpenGL 对比</h3><div class="tw"><table><tr><th>Vulkan</th><th>OpenGL 里对应什么</th><th>关键差别</th></tr>
+<tr><td>相邻命令可以重叠执行</td><td>驱动内部同样会重叠</td><td>OpenGL 规范要求结果等同于严格按调用顺序执行，驱动替你插入所有必要的等待</td></tr>
+<tr><td>执行依赖 + 内存依赖</td><td>隐式。上面的实验在 OpenGL 里不写任何东西就是对的</td><td>驱动每次都要自己分析资源用途，这是 OpenGL 驱动 CPU 开销的来源之一</td></tr>
+<tr><td><code>vkCmdPipelineBarrier2</code></td><td><code>glMemoryBarrier</code>（GL 4.2），只用于 image load/store、SSBO 等驱动追踪不到的写入</td><td>参数只有“之后要怎么读”一侧，相当于只有 dst</td></tr>
+<tr><td>同一张图既渲染又采样时的 barrier</td><td><code>glTextureBarrier</code>（GL 4.5）</td><td>都是告诉驱动：之前写的内容现在要能被读到</td></tr>
+<tr><td>layout 转换</td><td>没有，驱动自动完成</td><td>见第 5 章</td></tr>
+</table></div></div>
+<div class="ref"><h3>对照阅读</h3><ul>
+  <li>博客：themaister 的 <a href="https://themaister.net/blog/2019/08/14/yet-another-blog-explaining-vulkan-synchronization/">Yet another blog explaining Vulkan synchronization</a>，讲 stage 和 access 最透的一篇</li>
+  <li>Khronos：<a href="https://docs.vulkan.org/guide/latest/synchronization_examples.html">Synchronization Examples</a>，开头就是上面这个 compute 写、后续读的例子；<a href="https://docs.vulkan.org/guide/latest/extensions/VK_KHR_synchronization2.html">VK_KHR_synchronization2 说明</a>，讲新旧 API 的差别</li>
+  <li>Vulkan Tutorial：<a href="https://vulkan-tutorial.com/Texture_mapping/Images">Texture mapping / Images</a> 的 Layout transitions 和 Transition barrier masks 两节，旧版 API，推理过程值得读</li>
+  <li>规范：<a href="https://docs.vulkan.org/spec/latest/chapters/synchronization.html">Synchronization</a> 的 Pipeline Stages、Access Types、Pipeline Barriers 三节</li>
+  <li>视频：TU Wien 第 7 讲 Synchronization 的后半</li>
+</ul></div>
+<p class="note">Synchronization Examples 里有 swapchain image 转换的现成写法。按本仓库的规则，Task 01 的 barrier 由你自己推理写出，先别翻到那一节；写完之后拿它核对是可以的。</p>
+<div class="q"><h3>合上教材回答</h3>
+  <ol><li>用一句话分别说出：stage mask 约束什么，access mask 约束什么。</li>
+  <li>根据实验总结：src 的 stage 应该对准什么，dst 的 stage 应该对准什么？对得太宽和太窄各有什么后果？</li>
+  <li>你的清屏帧里，swapchain image 的第一次 layout 转换：在它之前，你的命令访问过这张图吗？在它之后，第一个访问它的是哪个阶段的哪种访问？</li>
+  <li>最后一次转换之后，使用这张图的是呈现引擎，不是你 queue 里的命令。这对 dst 一侧的两个 mask 意味着什么？那这次先后由什么保证？</li>
+  <li>submit 时等待 acquire semaphore 要指定一个阶段。这个阶段和第一条 barrier 的 <code>srcStageMask</code> 有什么关系？</li></ol></div>
+
+<!-- ============ 7 ============ -->
+<h2 id="c7"><span class="n">07</span>窗口尺寸、像素尺寸与 swapchain extent</h2>
+<p>swapchain 的尺寸在创建时固定。窗口变了，旧 swapchain 就和 surface 对不上了，需要重建。这里有三个容易混的数：窗口坐标尺寸、实际像素尺寸、surface 报告的 extent。</p>
+<figure>
+  <div class="row">
+    <label>窗口宽 <input type="range" id="rz-w" min="0" max="1600" step="20" value="960" style="width:120px"></label>
+    <label>窗口高 <input type="range" id="rz-h" min="0" max="900" step="20" value="540" style="width:120px"></label>
+    <label>像素密度 <select id="rz-d"><option>1</option><option>1.5</option><option>2</option></select></label>
+    <label><input type="checkbox" id="rz-min"> 最小化</label>
+  </div>
+  <div class="win"><div id="rz-box"></div></div>
+  <div class="read" style="flex-direction:column;gap:4px">
+    <span>SDL_GetWindowSize <b id="rz-a"></b></span>
+    <span>SDL_GetWindowSizeInPixels <b id="rz-b"></b></span>
+    <span>rebuild_swapchain 返回 <b id="rz-c"></b></span>
+  </div>
+  <figcaption>像素密度在 macOS 的 Retina 屏上是 2；Windows 上通常是 1，系统缩放体现在 display scale 上，以 SDL3 的高 DPI 文档为准。swapchain 要用像素尺寸，并且最终以 surface capabilities 的 <code>currentExtent</code> 为准。宽或高为 0、或者窗口最小化时，没有东西可画。</figcaption>
+</figure>
+<p><code>VulkanContext::rebuild_swapchain</code> 已经处理了尺寸判断和重建本身。它的头文件注释写了一条前置条件，那一条由你的帧循环负责满足。你会从三个渠道得知需要重建：SDL3 的 <code>SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED</code> 事件、acquire 的返回值、present 的返回值。三者到达的时机不同，不能只依赖其中一个。</p>
+<div class="gl"><h3>和 OpenGL 对比</h3><div class="tw"><table><tr><th>Vulkan</th><th>OpenGL 里对应什么</th><th>关键差别</th></tr><tr><td>重建 swapchain</td><td>不需要。default framebuffer 自动变大变小</td><td>这是 Vulkan 多出来的工作</td></tr><tr><td>更新 viewport 和 scissor</td><td><code>glViewport</code></td><td>两边都要做，且都要用像素尺寸</td></tr><tr><td>窗口坐标与像素尺寸的区别</td><td>相同，<code>SDL_GetWindowSizeInPixels</code> 同样适用</td><td>这是窗口系统的问题，与图形 API 无关</td></tr><tr><td>最小化时 extent 为 0，不能创建 swapchain</td><td>通常照常渲染也不会出错</td><td>Vulkan 需要你显式跳过</td></tr><tr><td>你自己创建的离屏附件</td><td>你自己创建的 FBO 纹理</td><td>两边都要自己按新尺寸重建</td></tr></table></div></div>
+<div class="ref"><h3>对照阅读</h3><ul>
+  <li>Vulkan Tutorial：<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Swap_chain_recreation">Swap chain recreation</a>，其中 Handling minimization 和 Fixing a deadlock 两小节和你的作业直接相关；它用 GLFW，事件部分换成 SDL3 理解</li>
+  <li>vkguide：<a href="https://vkguide.dev/docs/new_chapter_3/resizing_window/">Window Resizing</a></li>
+  <li>SDL3：<a href="https://wiki.libsdl.org/SDL3/SDL_GetWindowSizeInPixels">SDL_GetWindowSizeInPixels</a>、<a href="https://wiki.libsdl.org/SDL3/README-highdpi">高 DPI 说明</a></li>
+</ul></div>
+<div class="q"><h3>合上教材回答</h3>
+  <ol><li>读 <code>VulkanContext.h</code> 里 <code>rebuild_swapchain</code> 的 PRECONDITION。调用它之前，你要确认哪些事情已经完成？用什么确认？</li>
+  <li>重建后，你自己持有的资源里哪些跟着失效了，哪些不受影响？</li>
+  <li>窗口最小化期间，帧循环应该做什么？</li>
+  <li>acquire 成功之后才发现要重建，和 acquire 直接失败，后续处理有什么不同？</li></ol></div>
+
+<!-- ============ 8 ============ -->
+<h2 id="c8"><span class="n">08</span>读懂一条 Validation 报错</h2>
+<p>validation layer 的报错是 Vulkan 学习里最有用的反馈。它看起来很长，其实结构固定。下面是一条示意报错，对应第 2 章里“Pending 时 reset”的错误。点每一段看它的含义。</p>
+<figure>
+  <div class="vmsg" id="vm"></div>
+  <div class="msg" id="vm-msg" aria-live="polite"></div>
+  <figcaption>这是示意文本，句柄和 MessageID 是编的，实际措辞随 SDK 版本变化。同步验证的报错以 <code>SYNC-HAZARD-</code> 开头，描述的是两次访问之间缺少先后保证。</figcaption>
+</figure>
+<p>读报错的顺序：先看 VUID 对应的规范原句，它说的是哪条规则被违反；再看对象句柄，确定是哪个对象；最后回到自己的代码找调用点。本仓库的约定是，求助之前先用一句话复述这条报错的含义。</p>
+<div class="gl"><h3>和 OpenGL 对比</h3><div class="tw"><table><tr><th>Vulkan</th><th>OpenGL 里对应什么</th><th>关键差别</th></tr><tr><td>谁检查错误</td><td>驱动每次调用都检查，出错时设置错误码，多数情况下该调用被忽略</td><td>Vulkan 驱动不检查，用错是未定义行为；检查由可拆卸的 validation layer 完成，发布时零开销</td></tr><tr><td>查看错误</td><td><code>glGetError</code> 返回 <code>GL_INVALID_OPERATION</code> 之类的枚举</td><td>只知道出错了，不知道是哪次调用的哪条规则</td></tr><tr><td>详细消息</td><td><code>glDebugMessageCallback</code>（KHR_debug，GL 4.3）</td><td>对应 Vulkan 的 debug messenger，本仓库由 vk-bootstrap 接好</td></tr><tr><td>VUID</td><td>没有。消息文本由各家驱动自己写</td><td>Vulkan 的报错可以精确对应到规范条款</td></tr><tr><td>给对象起名</td><td><code>glObjectLabel</code></td><td>Vulkan 里是 <code>vkSetDebugUtilsObjectNameEXT</code></td></tr></table></div></div>
+<div class="ref"><h3>对照阅读</h3><ul>
+  <li>Khronos：<a href="https://docs.vulkan.org/guide/latest/validation_overview.html">Validation Overview</a></li>
+  <li>Vulkan Tutorial：<a href="https://vulkan-tutorial.com/Drawing_a_triangle/Setup/Validation_layers">Validation layers</a>，讲了 debug messenger 回调是怎么接上的</li>
+</ul></div>
+<div class="q"><h3>合上教材回答</h3>
+  <ol><li>画面看起来正常，validation 也没报错，能说明同步是正确的吗？</li>
+  <li>本仓库在哪里打开了同步验证？它比普通 validation 多检查什么？</li></ol></div>
+
+<h2><span class="n">→</span>接下来</h2>
+<ol>
+  <li>九组问题都能脱稿回答后，去读 README 学习表第 4、5 行。</li>
+  <li>在纸上把第 0 章的图重画一遍，补上等待关系：哪里等、谁等、等什么。这张图就是 <code>docs/task01-sync.md</code> 的草稿。</li>
+  <li>写出 <code>FrameData</code>，然后带着图来找 agent review。</li>
+</ol>
+</div>
+
+<script>
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const say=(id,t,k)=>{const e=$(id);e.textContent=t;e.className='msg'+(k?' '+k:'')};
+const runBar=(id,ms)=>{const e=$(id);e.style.transition='none';e.style.width='0';void e.offsetWidth;if(ms){e.style.transition='width '+ms+'ms linear';e.style.width='100%'}};
+
+/* 0 frame flow */
+const FL=[[150,190,'一张 image 归呈现引擎持有，等着被借走。'],
+ [150,50,'① CPU 向呈现引擎借一张 image，拿到它的编号。'],
+ [280,50,'② CPU 把这一帧的命令录进 command buffer。GPU 这时还没开始干活。'],
+ [410,50,'③ CPU 把 command buffer 提交到 queue，函数立刻返回。'],
+ [505,120,'④ GPU 在自己的时间线上执行这些命令，把颜色写进那张 image。'],
+ [540,50,'⑤ CPU 请求呈现这张 image。注意：CPU 调用 present 的时刻，可能早于第 ④ 步结束。'],
+ [640,190,'⑥ 呈现引擎在垂直同步时把它换上屏幕。下次刷新后，它回到可借状态。']];
+let fl=0,flT=null;
+function flDraw(){$$('.flow g').forEach((g,i)=>g.classList.toggle('on',i===fl));$('#tok').style.transform=`translate(${FL[fl][0]}px,${FL[fl][1]-26}px)`;say('#fl-msg',FL[fl][2])}
+$('#fl-next').onclick=()=>{fl=(fl+1)%7;flDraw()};
+$('#fl-play').onclick=()=>{if(flT){clearInterval(flT);flT=null;$('#fl-play').textContent='播放';return}$('#fl-play').textContent='暂停';flT=setInterval(()=>{fl=(fl+1)%7;flDraw()},1700)};
+flDraw();
+
+/* 1 object chain */
+const OBJ=[
+ ['Instance','你的程序和 Vulkan 驱动之间的连接。instance 级的扩展和 layer 在这里启用，validation layer 就是其中之一。','无。窗口系统需要哪些扩展由 SDL_Vulkan_GetInstanceExtensions 报告。','VulkanContext::initialize 前半'],
+ ['Surface','窗口在 Vulkan 里的代表，平台相关，由 SDL_Vulkan_CreateSurface 创建。','Instance 和 SDL 窗口。必须先于选显卡存在，因为要问每块显卡能不能往它上面呈现。','VulkanContext::initialize'],
+ ['Physical Device','一块实际的显卡，只读。可以查询它支持的特性、限制和队列族。','Instance；挑选时要用到 Surface。本仓库要求 1.3 的 dynamicRendering 和 synchronization2。','VulkanContext::initialize 的 selector'],
+ ['Device','逻辑设备：在选中的显卡上开启一组特性后得到的句柄。之后几乎所有对象都从它创建，也都要在它之前销毁。','Physical Device。','VulkanContext::initialize'],
+ ['Queue','向 GPU 提交工作的入口。它属于某个队列族，族决定它能做 graphics、present、compute 还是 transfer。提交是异步的。','Device。随 Device 一起创建和销毁，不需要单独销毁。graphics 和 present 可能是同一个队列。','graphics_queue() / present_queue()'],
+ ['Swapchain','一组和 surface 绑定、轮流上屏的 image。格式、尺寸、数量和 present mode 在创建时固定。','Device 和 Surface。窗口尺寸变了就要重建。','VulkanContext::rebuild_swapchain'],
+ ['Image / View','image 归 swapchain 所有，你不创建也不销毁。image view 是你为了把 image 当附件用而创建的视图，要自己销毁。','Swapchain。swapchain 重建后两者全部失效。','swapchain_images() / swapchain_views()']];
+const GLO=['没有单独的对象。创建 GL context（如 SDL_GL_CreateContext）时一并完成，扩展用 glGetStringi 查询。',
+ '窗口本身加上它的像素格式。context 创建时就和窗口绑定，对应 default framebuffer。',
+ '不能在 API 里选显卡，由系统或驱动决定。只能用 glGetString(GL_RENDERER) 查看用的是哪块。',
+ 'GL context。区别是 context 是绑在线程上的隐式全局状态，Vulkan 的 device 是每次调用都显式传入的句柄。',
+ '没有。命令按调用顺序进入 context 的隐式命令流，glFlush 是最接近“提交”的操作。',
+ 'default framebuffer 的前后缓冲。格式由像素格式决定，尺寸自动跟随窗口。',
+ 'default framebuffer 的 back buffer，拿不到句柄。普通纹理有 glTextureView，back buffer 没有。'];
+const chain=$('#chain');let built=7,chT=null;
+OBJ.forEach((o,i)=>{if(i)chain.insertAdjacentHTML('beforeend','<i>→</i>');const b=document.createElement('button');b.className='mono';b.textContent=o[0];b.onclick=()=>pick(i);chain.append(b)});
+function pick(i){$$('#chain button').forEach((b,j)=>b.classList.toggle('on',i===j));const o=OBJ[i];
+ $('#objd').innerHTML=`<dt>职责</dt><dd>${o[1]}</dd><dt>依赖</dt><dd>${o[2]}</dd><dt>本仓库</dt><dd><code>${o[3]}</code></dd><dt style="color:var(--gl)">OpenGL</dt><dd>${GLO[i]}</dd>`}
+function chDraw(){$$('#chain button').forEach((b,j)=>b.classList.toggle('off',j>=built))}
+function chRun(dir){clearInterval(chT);built=dir>0?0:7;chDraw();chT=setInterval(()=>{if(dir>0){pick(built);built++}else{built--;pick(built)}chDraw();if(built===0||built===7)clearInterval(chT)},750)}
+$('#ch-build').onclick=()=>chRun(1);$('#ch-destroy').onclick=()=>chRun(-1);pick(0);
+
+/* 2 command buffer */
+let cb={s:'initial',n:0,x:-1};const CBN=['initial','recording','executable','pending'];
+function cbDraw(){CBN.forEach(k=>$('#cb-'+k).classList.toggle('on',cb.s===k));let h='';
+ for(let i=0;i<cb.n;i++)h+=`<span class="${i<cb.x?'done':i===cb.x?'run':''}">cmd ${i+1}</span>`;
+ $('#cb-cmds').innerHTML=h||'<em>command buffer 是空的</em>'}
+function cbExec(){cb.x++;cbDraw();if(cb.x>=cb.n){cb.s='executable';cbDraw();return say('#cb-msg','GPU 执行完了，buffer 回到 Executable。CPU 这边不会自动收到通知。','ok')}setTimeout(cbExec,650)}
+const CB={
+ begin(){if(cb.s==='initial'){cb.s='recording';return['开始录制。']}
+  if(cb.s==='executable'){cb.s='recording';cb.n=0;cb.x=-1;return['Executable 状态下 begin：先隐式 reset，旧命令清空，再开始录制。']}
+  if(cb.s==='recording')return['已经在录制中，不能再次 begin。','bad'];return['Pending 状态不能 begin：GPU 正在读这块 buffer。','bad']},
+ cmd(){if(cb.s!=='recording')return['只有 Recording 状态才能录命令。','bad'];if(cb.n>=12)return['这个演示最多录 12 条。'];cb.n++;return['写入一条命令。GPU 这时什么都没做。']},
+ end(){if(cb.s!=='recording')return['只有 Recording 状态才能 end。','bad'];cb.s='executable';return['录制结束，可以提交了。']},
+ submit(){if(cb.s!=='executable')return['只有 Executable 状态才能 submit。','bad'];cb.s='pending';cb.x=-1;setTimeout(cbExec,500);return['已提交，函数立刻返回。GPU 开始逐条执行。现在试试 reset。']},
+ reset(){if(cb.s==='pending')return['Pending 状态不能 reset：validation 会报这块 buffer 正在使用中。','bad'];cb.s='initial';cb.n=0;cb.x=-1;return['已 reset，命令清空。']}};
+$$('[data-cb]').forEach(b=>b.onclick=()=>{const r=CB[b.dataset.cb]();say('#cb-msg',r[0],r[1]);cbDraw()});
+cbDraw();say('#cb-msg','从 begin 开始。');
+
+/* 3a factory */
+let fa,faRaf=null,faLast=0;const CPU_MS=800;
+function faStep(dt){const g=+$('#fa-g').value;fa.cp+=dt/CPU_MS;if(fa.cp>=1){fa.cp=0;fa.q.push(++fa.sub)}
+ if(!fa.cur&&fa.q.length){fa.cur=fa.q.shift();fa.gp=0}
+ if(fa.cur){fa.gp+=dt/(CPU_MS*g);if(fa.gp>=1){fa.done=fa.cur;fa.cur=0;fa.gp=0}}}
+function faDraw(){$('#fa-gv').textContent=$('#fa-g').value;$('#fa-cb').style.width=fa.cp*100+'%';$('#fa-gb').style.width=fa.gp*100+'%';
+ $('#fa-cl').textContent='第 '+(fa.sub+1)+' 帧';$('#fa-gl').textContent=fa.cur?'第 '+fa.cur+' 帧':'空闲';
+ $('#fa-q').innerHTML=fa.q.slice(0,28).map(f=>`<span>${f}</span>`).join('')+(fa.q.length>28?`<span>+${fa.q.length-28}</span>`:'');
+ $('#fa-a').textContent=fa.sub;$('#fa-b').textContent=fa.done;$('#fa-k').textContent=fa.sub-fa.done}
+function faStop(){cancelAnimationFrame(faRaf);faRaf=null;$('#fa-play').textContent='运行'}
+function faLoop(t){const dt=Math.min(t-faLast,60);faLast=t;faStep(dt);faDraw();if(fa.q.length>80)return faStop();faRaf=requestAnimationFrame(faLoop)}
+function faReset(){fa={cp:0,gp:0,q:[],cur:0,sub:0,done:0};for(let i=0;i<260;i++)faStep(16);faDraw()}
+$('#fa-play').onclick=()=>{if(faRaf)return faStop();$('#fa-play').textContent='暂停';faLast=performance.now();faRaf=requestAnimationFrame(faLoop)};
+$('#fa-reset').onclick=()=>{faStop();faReset()};$('#fa-g').oninput=faDraw;faReset();
+
+/* 3b fence */
+let fe={sig:false,busy:false,wait:false};
+function feDraw(){const s=$('#fe-s');s.textContent=fe.sig?'signaled':'unsignaled';s.className='pill'+(fe.sig?' hot':'');
+ const g=$('#fe-g');g.textContent=fe.busy?'执行中':'空闲';g.className='pill'+(fe.busy?' hot':'');
+ const c=$('#fe-c');c.textContent=fe.wait?'阻塞在 vkWaitForFences':'在运行';c.className='pill'+(fe.wait?' wait':'')}
+$('#fe-sub').onclick=()=>{if(fe.wait)return;if(fe.busy)return say('#fe-msg','上一批还没执行完，这个 fence 仍被那次提交占用。','bad');
+ if(fe.sig)return say('#fe-msg','fence 还是 signaled。交给 submit 之前必须先 reset。','bad');
+ fe.busy=true;runBar('#fe-bar',3000);say('#fe-msg','submit 立刻返回，CPU 继续运行。GPU 开始执行。');feDraw();
+ setTimeout(()=>{fe.busy=false;fe.sig=true;if(fe.wait){fe.wait=false;say('#fe-msg','GPU 执行完，fence 变为 signaled，CPU 的等待返回。','ok')}else say('#fe-msg','GPU 执行完，fence 变为 signaled。');feDraw()},3000)};
+$('#fe-wait').onclick=()=>{if(fe.wait)return;if(fe.sig)return say('#fe-msg','fence 已经是 signaled，等待立刻返回。','ok');
+ if(!fe.busy)return say('#fe-msg','没有任何提交会 signal 这个 fence。timeout 填最大值的话，程序就卡死在这里。','bad');
+ fe.wait=true;say('#fe-msg','CPU 停在这里，直到 GPU 把 fence 置为 signaled。');feDraw()};
+$('#fe-reset').onclick=()=>{if(fe.wait)return;if(fe.busy)return say('#fe-msg','这个 fence 关联的提交还没执行完，不能 reset。','bad');fe.sig=false;runBar('#fe-bar',0);say('#fe-msg','fence 回到 unsignaled。');feDraw()};
+feDraw();say('#fe-msg','先提交，再让 CPU 等待。然后不 reset 直接再提交一次试试。');
+
+/* 3c semaphore */
+let se,seGen=0;const SEA={idle:'未提交',run:'执行中',done:'完成'},SEB={idle:'未提交',wait:'已提交，等待 S',run:'执行中',done:'完成'};
+function seDraw(){const a=$('#se-a');a.textContent=SEA[se.a];a.className='pill'+(se.a==='run'?' hot':'');
+ const b=$('#se-b');b.textContent=SEB[se.b];b.className='pill'+(se.b==='run'?' hot':se.b==='wait'?' wait':'');
+ const s=$('#se-s');s.textContent=se.s?'signaled':'unsignaled';s.className='pill'+(se.s?' hot':'')}
+function seTry(){if(se.b==='wait'&&se.s){const gen=seGen;se.s=false;se.b='run';runBar('#se-bbar',2200);say('#se-msg','B 等到了 S，开始执行。S 自动变回 unsignaled。');
+ setTimeout(()=>{if(gen!==seGen)return;se.b='done';say('#se-msg','B 完成。整个过程 CPU 没有等待过。','ok');seDraw()},2200)}seDraw()}
+function seReset(){seGen++;se={a:'idle',b:'idle',s:false};runBar('#se-abar',0);runBar('#se-bbar',0);seDraw();say('#se-msg','先提交 B，再提交 A。')}
+$('#se-sa').onclick=()=>{if(se.a!=='idle')return;const gen=seGen;se.a='run';runBar('#se-abar',2200);say('#se-msg','A 已提交，submit 立刻返回。');seDraw();
+ setTimeout(()=>{if(gen!==seGen)return;se.a='done';se.s=true;say('#se-msg','A 完成，S 变为 signaled。');seTry()},2200)};
+$('#se-sb').onclick=()=>{if(se.b!=='idle')return;se.b='wait';say('#se-msg','B 已提交，submit 立刻返回。B 在队列里等 S。');seTry()};
+$('#se-reset').onclick=seReset;seReset();
+
+/* 4 swapchain */
+let sc,scT=null;const HUE=['#e76f51','#2a9d8f','#e9c46a','#7d9be0'];
+const SCT={free:'呈现引擎持有<br>可被 acquire',app:'你持有<br>点击 present',queued:'已 present<br>等待上屏',screen:'正在显示'};
+function scDraw(){$('#sc-imgs').innerHTML=sc.img.map((s,i)=>`<button class="${s}" style="--h:${HUE[i]}" data-i="${i}" aria-label="image ${i}"><b>${i}</b><small>${SCT[s]}</small></button>`).join('');
+ $$('#sc-imgs button').forEach(b=>b.onclick=()=>scPresent(+b.dataset.i));
+ $('#sc-log').textContent=sc.log.length?sc.log.slice(-16).join(', '):'（还没有）';
+ $('#sc-mon').style.background=sc.screen<0?'#8a94a3':HUE[sc.screen];$('#sc-monb').textContent=sc.screen<0?'–':sc.screen}
+function scPresent(i){if(sc.img[i]!=='app')return;sc.img[i]='queued';sc.q.push(i);say('#sc-msg','image '+i+' 已交还呈现引擎，排队等下一次 vblank。');scDraw()}
+function scAcq(){const f=sc.img.map((s,i)=>s==='free'?i:-1).filter(i=>i>=0);
+ if(!f.length)return say('#sc-msg','没有可用的 image。acquire 会阻塞到有 image 归还，或者超时返回。','bad');
+ const i=f[Math.floor(Math.random()*f.length)];sc.img[i]='app';sc.log.push(i);say('#sc-msg','第 '+sc.log.length+' 次 acquire，返回 imageIndex = '+i+'。');scDraw()}
+function scVb(){if(!sc.q.length)return say('#sc-msg','没有新 present 的 image，屏幕继续显示当前这张。');
+ const i=sc.q.shift();if(sc.screen>=0)sc.img[sc.screen]='free';sc.screen=i;sc.img[i]='screen';say('#sc-msg','image '+i+' 上屏。之前显示的那张回到可用状态。');scDraw()}
+function scStop(){clearInterval(scT);scT=null;$('#sc-auto').textContent='自动演示'}
+function scReset(){scStop();sc={img:['free','free','free','free'],q:[],screen:-1,log:[]};scDraw();say('#sc-msg','点 acquire 借一张 image。')}
+$('#sc-acq').onclick=scAcq;$('#sc-vb').onclick=scVb;$('#sc-reset').onclick=scReset;
+$('#sc-auto').onclick=()=>{if(scT)return scStop();$('#sc-auto').textContent='停止';let ph=0;scT=setInterval(()=>{const a=sc.img.indexOf('app');
+ if(ph===0)scAcq();else if(ph===1&&a>=0)scPresent(a);else scVb();ph=(ph+1)%3},850)};
+scReset();
+
+/* 5a layout */
+let ly={l:'UNDEFINED',held:true};
+const NEED={render:['COLOR_ATTACHMENT_OPTIMAL','GENERAL'],clear:['TRANSFER_DST_OPTIMAL','GENERAL'],present:['PRESENT_SRC_KHR']};
+function lyDraw(){$('#ly-l').textContent=ly.l;$('#ly-h').textContent=ly.held?'你的程序':'呈现引擎'}
+$$('[data-ly]').forEach(b=>b.onclick=()=>{if(!ly.held)return say('#ly-msg','这张 image 已经还给呈现引擎，现在不能碰它。','bad');ly.l=b.dataset.ly;say('#ly-msg','barrier 执行后，layout 变为 '+ly.l+'。');lyDraw()});
+$$('[data-use]').forEach(b=>b.onclick=()=>{if(!ly.held)return say('#ly-msg','这张 image 已经还给呈现引擎，现在不能碰它。','bad');const n=NEED[b.dataset.use];
+ if(!n.includes(ly.l))return say('#ly-msg','这个操作要求 layout 是 '+n.join(' 或 ')+'，当前是 '+ly.l+'。validation 会在这里报错。','bad');
+ if(b.dataset.use==='present'){ly.held=false;say('#ly-msg','present 成功，image 交还呈现引擎。','ok')}else say('#ly-msg','layout 符合要求，操作合法。','ok');lyDraw()});
+$('#ly-re').onclick=()=>{if(ly.held)return say('#ly-msg','它现在就在你手里。');ly.held=true;say('#ly-msg','再次拿到这张 image。layout 仍是上次 present 时的 PRESENT_SRC_KHR，但里面的内容不保证还在。');lyDraw()};
+lyDraw();say('#ly-msg','先直接点“作为颜色附件渲染”。');
+
+/* 5b loadOp */
+const TRI='<polygon points="100,18 140,84 60,84" fill="#e76f51"/>',UNDEF='<rect width="160" height="100" fill="#3a4250"/><text x="80" y="66" text-anchor="middle" font-size="46" font-family="monospace" fill="#aeb7c4">?</text>';
+function loDraw(){const l=$('#lo-load').value,s=$('#lo-store').value,c=$('#lo-col').value;let h,m;
+ if(s==='DONT_CARE'){h=UNDEF;m='storeOp = DONT_CARE：渲染结果不保证写回附件，之后读到什么都有可能。'}
+ else if(l==='CLEAR'){h=`<rect width="160" height="100" fill="${c}"/>`+TRI;m='loadOp = CLEAR：开始渲染时整张附件填成 clear 颜色，旧内容消失。'}
+ else if(l==='LOAD'){h='<rect width="160" height="100" fill="#8a94a3"/><circle cx="50" cy="52" r="26" fill="#e9c46a"/>'+TRI;m='loadOp = LOAD：保留旧内容，新画的东西叠在上面。'}
+ else{h=UNDEF+TRI;m='loadOp = DONT_CARE：三角形以外的区域是未定义的。只有打算把每个像素都重画时才适合用。'}
+ $('#lo-out').innerHTML=h;say('#lo-msg',m)}
+['#lo-load','#lo-store','#lo-col'].forEach(s=>$(s).oninput=loDraw);loDraw();
+
+/* 6 pipeline barrier */
+const PBS=['VERTEX_INPUT','VERTEX_SHADER','FRAGMENT_SHADER','COLOR_ATTACHMENT_OUTPUT'];let pbGen=0;
+$('#pb-b').innerHTML=PBS.map((n,i)=>`<span id="pb-s${i}">${n}${i===1?'<br><small>读 buffer</small>':''}</span>`).join('');
+$('#pb-run').onclick=()=>{const gen=++pbGen,src=$('#pb-src').value,dst=+$('#pb-dst').value,eff=src==='COMPUTE_SHADER'&&dst>=0;
+ PBS.forEach((_,i)=>$('#pb-s'+i).className='');let aDone=false,bad=false,held=false;
+ $('#pb-a').className='cur';runBar('#pb-abar',2600);say('#pb-msg','A 和 B 都已录制并提交。GPU 让相邻命令尽量重叠执行。');
+ function fin(){if(dst<0)return say('#pb-msg','没有 barrier：B 的顶点着色器在 A 写完之前就读了 buffer。读到什么取决于时序，可能这次对、下次错。','bad');
+  if(src==='NONE')return say('#pb-msg','srcStageMask 是 NONE，没有覆盖 A 实际写入的阶段。barrier 录了，但没有拦住任何东西。','bad');
+  if(bad)return say('#pb-msg','dstStageMask 指的阶段比实际读取的阶段晚。B 被拦住的时候，顶点着色器早就读过了。','bad');
+  say('#pb-msg',dst===1?'结果正确。B 的 VERTEX_INPUT 和 A 重叠执行，只在真正要读的阶段之前等待。':'结果正确，但 B 在 VERTEX_INPUT 就停下了，比必要的早了一个阶段。','ok')}
+ function step(i){if(gen!==pbGen)return;if(i>0)$('#pb-s'+(i-1)).className='done';if(i>=4)return fin();
+  if(eff&&i===dst&&!aDone){held=true;$('#pb-s'+i).className='hold';return say('#pb-msg','B 停在 '+PBS[i]+' 之前，等 A 的 COMPUTE_SHADER 阶段完成。')}
+  if(i===1&&!aDone)bad=true;$('#pb-s'+i).className='cur';setTimeout(()=>step(i+1),650)}
+ setTimeout(()=>{if(gen!==pbGen)return;aDone=true;$('#pb-a').className='done';if(held){held=false;step(dst)}},2600);
+ setTimeout(()=>step(0),300)};
+say('#pb-msg','先用默认参数运行一次，再换成“不写 barrier”对比。');
+
+/* 7 resize */
+function rzDraw(){const w=+$('#rz-w').value,h=+$('#rz-h').value,d=+$('#rz-d').value,mn=$('#rz-min').checked,pw=Math.round(w*d),ph=Math.round(h*d);
+ const box=$('#rz-box');box.style.width=(mn?0:w/1600*90)+'%';box.style.height=(mn?0:h/900*104)+'px';box.style.visibility=(mn||!w||!h)?'hidden':'visible';
+ $('#rz-a').textContent=w+' × '+h+(mn?'（最小化）':'');$('#rz-b').textContent=pw+' × '+ph;
+ const bad=mn||!pw||!ph,c=$('#rz-c');c.textContent=bad?'false：暂时不可绘制，这一帧不要 acquire':'true：按 '+pw+' × '+ph+' 重建（再经 surface capabilities 校正）';c.style.color=bad?'var(--bad)':'var(--ok)'}
+['#rz-w','#rz-h','#rz-d','#rz-min'].forEach(s=>$(s).oninput=rzDraw);rzDraw();
+
+/* 8 validation message */
+const VM=[['Validation Error:','严重级别。Error 表示违反了规范，行为未定义；Warning 和 Performance Warning 不一定是错。'],
+ ['[ VUID-vkResetCommandBuffer-commandBuffer-00045 ]','VUID：被违反的那条规则的编号。格式是“函数或结构体名 - 参数名 - 序号”。拿它去规范里搜，能直接定位到原文。'],
+ ['Object 0: handle = 0x1f2a3b4c5d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER;','涉及的对象及其句柄。给对象起了 debug name 的话，名字也会显示在这里，排查时省很多事。'],
+ ['| MessageID = 0x1e7883ea |','这条消息类型的数字编号，用于在设置里过滤某一类消息。一般不用看。'],
+ ['vkResetCommandBuffer(): commandBuffer (VkCommandBuffer 0x1f2a3b4c5d0) is in use.','出错的函数和 validation layer 观察到的现象：这个 command buffer 正在被使用。'],
+ ['The Vulkan spec states: commandBuffer must not be in the pending state','规范原句：commandBuffer 不能处于 pending 状态。这一句是最该先读的部分。'],
+ ['(https://docs.vulkan.org/spec/latest/chapters/cmdbuffers.html#VUID-vkResetCommandBuffer-commandBuffer-00045)','规范里这条规则的链接，打开能看到它前后的上下文。']];
+VM.forEach((v,i)=>{const b=document.createElement('button');b.textContent=v[0];b.onclick=()=>{$$('#vm button').forEach((x,j)=>x.classList.toggle('on',i===j));say('#vm-msg',v[1])};$('#vm').append(b,' ')});
+say('#vm-msg','点上面任意一段。');
+</script>
+</body>
+</html>
