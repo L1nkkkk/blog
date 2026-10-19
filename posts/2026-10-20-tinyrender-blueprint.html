@@ -1,0 +1,1179 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TinyRender 代码蓝图</title>
+<meta name="tags" content="TinyRender, 图形学">
+<meta name="description" content="把 TinyRender 渲染器仓库拆成一张张蓝图节点图：光栅化管线、BVH 与求交、Whitted 光追与路径追踪、距离场与体积渲染，每个节点附签名、关键代码与原理。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700&display=swap" media="print" onload="this.media='all'">
+<style>
+/* Layout: blueprint canvas (left, pan/zoom) + inspector panel (right); stacks on phones. Single dark look by design, like an editor graph. */
+:root{
+  color-scheme: dark;
+  --ground:#14171b; --grid:#1c2026; --grid-major:#252a31;
+  --panel:#1a1e23; --panel-2:#20252b; --line:#2e353d;
+  --fg:#d9dee3; --muted:#8d97a1; --accent:#5aa9ff;
+  --node:#262b31; --node-border:#3a414a;
+  --h-event:#8a2d2a; --h-func:#285a8c; --h-pure:#3f6a2c; --h-macro:#4c5158; --h-branch:#5d5348; --h-par:#5a3b8e;
+  --t-exec:#e9edf0; --t-mat:#f08a3c; --t-vec3:#f2c744; --t-vec2:#4fd2b6; --t-float:#9bd85a; --t-int:#48c6e8; --t-bool:#d9483f; --t-struct:#4a85e6; --t-color:#e463a8; --t-fn:#aa8cf5;
+  --f-ui:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --f-code:"JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{background:var(--ground);color:var(--fg);font-family:var(--f-ui);font-size:14px;margin:0;overflow:hidden}
+.app{height:100%;display:grid;grid-template-rows:auto 1fr;}
+header{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:15px;font-weight:700;margin:0;letter-spacing:.02em;white-space:nowrap}
+header h1 small{font-weight:400;color:var(--muted);font-family:var(--f-code);font-size:11px;margin-left:8px}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;min-width:0}
+.tab{font:inherit;font-size:12.5px;color:var(--muted);background:transparent;border:1px solid transparent;border-radius:5px;padding:4px 10px;cursor:pointer}
+.tab:hover{color:var(--fg);border-color:var(--line)}
+.tab[aria-selected="true"]{color:var(--fg);background:var(--panel-2);border-color:var(--node-border)}
+.tab .lvl{font-family:var(--f-code);font-size:10px;color:var(--accent);margin-right:5px}
+.mods{display:flex;gap:2px;flex-wrap:wrap;background:var(--ground);border:1px solid var(--line);border-radius:7px;padding:3px}
+.mod{font:inherit;font-size:12.5px;color:var(--muted);background:transparent;border:0;border-radius:5px;padding:4px 10px;cursor:pointer}
+.mod:hover{color:var(--fg)}
+.mod[aria-pressed="true"]{background:var(--accent);color:#14171b;font-weight:500}
+.mod:focus-visible,.tab:focus-visible,.btn:focus-visible,.node:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.main{display:grid;grid-template-columns:1fr minmax(320px,430px);min-height:0}
+.stage{position:relative;overflow:hidden;min-width:0;touch-action:none;cursor:grab;
+  background-color:var(--ground);
+  background-image:linear-gradient(var(--grid-major) 1px,transparent 1px),linear-gradient(90deg,var(--grid-major) 1px,transparent 1px),linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);}
+.stage.dragging{cursor:grabbing}
+svg#canvas{width:100%;height:100%;display:block}
+.crumb{position:absolute;left:14px;top:12px;font-size:12px;color:var(--muted);pointer-events:none;display:flex;gap:8px;align-items:center}
+.crumb b{color:var(--fg);font-weight:500}
+.tools{position:absolute;right:12px;top:10px;display:flex;gap:6px}
+.btn{font:inherit;font-size:12px;color:var(--fg);background:var(--panel-2);border:1px solid var(--node-border);border-radius:5px;padding:4px 9px;cursor:pointer}
+.btn:hover{border-color:var(--accent)}
+.legend{position:absolute;left:12px;bottom:12px;background:rgba(26,30,35,.92);border:1px solid var(--line);border-radius:6px;padding:8px 10px;display:grid;grid-template-columns:repeat(2,auto);gap:4px 14px;font-family:var(--f-code);font-size:11px;color:var(--muted)}
+.legend span{display:flex;align-items:center;gap:6px}
+.legend i{width:9px;height:9px;border-radius:50%;display:inline-block}
+.hint{position:absolute;right:12px;bottom:12px;font-size:11px;color:var(--muted);text-align:right;pointer-events:none}
+/* graph */
+.node rect.body{fill:var(--node);stroke:var(--node-border);stroke-width:1}
+.node.sel rect.body{stroke:var(--accent);stroke-width:2}
+.node{cursor:pointer}
+.node text{font-family:var(--f-code);font-size:12px;fill:var(--fg)}
+.node .ttl{font-family:var(--f-ui);font-size:13px;font-weight:700;fill:#fff}
+.node .sub{font-size:10.5px;fill:#ffffffaa}
+.node .pl{fill:#c3cad1}
+.node .drill{font-size:11px;fill:#fff}
+.wire{fill:none;stroke-width:2.2;opacity:.85;transition:opacity .15s}
+.wire.exec{stroke-width:2.6}
+.wire.data{stroke-dasharray:7 7;animation:flow 1.1s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-28}}
+.node.fire rect.body{stroke:#fff;stroke-width:2.5}
+.node.done rect.body{stroke:#7fdc8a;stroke-width:1.6}
+.particle{pointer-events:none}
+.btn.on{background:var(--accent);color:#14171b;border-color:var(--accent)}
+svg.focus .wire{opacity:.15}
+svg.focus .wire.hot{opacity:1}
+svg.focus .node{opacity:.55}
+svg.focus .node.near,svg.focus .node.sel{opacity:1}
+.cmt rect{fill:#ffffff06;stroke:#ffffff22;stroke-dasharray:5 4}
+.cmt text{font-family:var(--f-ui);font-size:13px;fill:#ffffff88}
+/* panel */
+aside{border-left:1px solid var(--line);background:var(--panel);overflow-y:auto;min-width:0;padding-block:18px 40px;padding-left:20px;padding-right:max(20px,env(safe-area-inset-right,0px))}
+aside .kind{display:inline-block;font-family:var(--f-code);font-size:10.5px;padding:2px 7px;border-radius:3px;color:#fff;letter-spacing:.04em}
+aside h2{font-size:19px;margin:10px 0 4px;font-family:var(--f-code);font-weight:600;word-break:break-word;text-wrap:balance}
+aside .loc{font-family:var(--f-code);font-size:11.5px;color:var(--accent);text-decoration:none}
+aside .loc:hover{text-decoration:underline}
+aside h3{font-size:11.5px;letter-spacing:.12em;color:var(--muted);font-weight:500;margin:22px 0 8px;text-transform:uppercase}
+aside p{line-height:1.75;margin:0 0 10px;max-width:62ch}
+aside p code,aside li code{font-family:var(--f-code);font-size:12px;background:var(--panel-2);padding:1px 5px;border-radius:3px;color:#e9d9a6}
+pre{background:#0f1215;border:1px solid var(--line);border-radius:6px;padding:12px;overflow-x:auto;font-family:var(--f-code);font-size:12px;line-height:1.6;margin:0;color:#cfd6dc}
+pre .k{color:#c792ea}.pre .c{color:#6b7782}pre .n{color:#f2c744}
+.sig{color:#9fd3ff}
+details{border:1px solid var(--line);border-radius:6px;margin-bottom:8px;background:var(--panel-2)}
+summary{cursor:pointer;padding:9px 12px;line-height:1.55;list-style:none;font-weight:500}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"问";font-family:var(--f-code);font-size:10px;color:#14171b;background:var(--t-vec3);border-radius:3px;padding:1px 5px;margin-right:8px;vertical-align:1px}
+details[open] summary{border-bottom:1px solid var(--line)}
+details .ans{padding:10px 12px 4px;line-height:1.75}
+.drillbtn{margin-top:14px;font:inherit;font-weight:500;color:#14171b;background:var(--accent);border:0;border-radius:5px;padding:7px 14px;cursor:pointer}
+.empty{color:var(--muted);line-height:1.8}
+.formula{font-family:var(--f-code);font-size:12.5px;background:#0f1215;border:1px dashed var(--line);border-radius:6px;padding:9px 12px;margin:6px 0 12px;color:#ffe9a8;overflow-x:auto;white-space:nowrap}
+@media (max-width: 860px){
+  body{overflow:auto}
+  .app{height:auto}
+  .main{grid-template-columns:1fr}
+  .stage{height:62vh;min-height:380px}
+  aside{border-left:0;border-top:1px solid var(--line);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+  .legend{display:none}
+}
+@media (prefers-reduced-motion: reduce){.wire{transition:none}.wire.data{animation:none}}
+</style>
+
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>TinyRender 蓝图<small>L1nkkkk/Rasterizer-render</small></h1>
+    <nav class="mods" id="mods" aria-label="模块"></nav>
+    <nav class="tabs" id="tabs" role="tablist" aria-label="本模块的图"></nav>
+  </header>
+  <div class="main">
+    <div class="stage" id="stage">
+      <svg id="canvas" aria-label="函数蓝图画布"><defs><filter id="glow" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><g id="view"></g></svg>
+      <div class="crumb" id="crumb"></div>
+      <div class="tools">
+        <button class="btn" id="zin" aria-label="放大">＋</button>
+        <button class="btn" id="zout" aria-label="缩小">－</button>
+        <button class="btn" id="fit">适配视图</button>
+        <button class="btn" id="play">▶ 数据流演示</button>
+      </div>
+      <div class="legend" id="legend"></div>
+      <div class="hint">拖拽平移 · 滚轮缩放 · 单击查看 · 双击进入子图 · ▶ 按依赖顺序播放数据流</div>
+    </div>
+    <aside id="panel" aria-live="polite"></aside>
+  </div>
+</div>
+
+<script>
+const GH = "https://github.com/L1nkkkk/Rasterizer-render/blob/main/";
+const TYPES = {exec:"--t-exec",Mat4:"--t-mat",Vec4:"--t-vec3",Vec3:"--t-vec3",Vec2:"--t-vec2",float:"--t-float",int:"--t-int",bool:"--t-bool",struct:"--t-struct",Color:"--t-color",Fn:"--t-fn"};
+const TYPE_NAMES = [["exec","执行流"],["Mat4","矩阵"],["Vec3","向量 3/4"],["Vec2","向量 2"],["float","float"],["int","int"],["bool","bool"],["struct","结构体"],["Color","颜色"],["Fn","函数对象"]];
+const KIND = {event:["事件 / 入口","--h-event"],func:["函数","--h-func"],pure:["纯函数 / 计算","--h-pure"],macro:["子图","--h-macro"],branch:["分支","--h-branch"],par:["并行","--h-par"]};
+const cssv = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+/* ---------- graphs ---------- */
+const GRAPHS = [
+ {id:"frame",lvl:"L1",name:"一帧总览",parent:null,
+  intro:`<p><code>Render::renderScene</code> 是一帧的入口。整体结构是<b>单线程几何阶段 + 可选的并行像素阶段</b>：先在调用线程上把所有三角形变换、裁剪、准备好，再按 <code>raster_mode</code> 选择顺序光栅化或 tile 并行光栅化。</p><p>带 <b>子图</b> 标记的节点可以双击进入函数级拆解。建议的阅读顺序：矩阵与顶点变换 → 裁剪与三角形准备 → 逐像素光栅化 → 着色 → Tile 并行。</p>`},
+ {id:"xform",lvl:"L2",name:"矩阵与顶点变换",parent:"frame",
+  intro:`<p>这张图对应 <code>renderScene</code> 里每个模型、每个三角形的变换部分，以及四个矩阵构造函数。核心思想：矩阵<b>每个模型算一次</b>，顶点<b>每个三角形算三次</b>。</p>`},
+ {id:"clip",lvl:"L2",name:"裁剪与三角形准备",parent:"frame",
+  intro:`<p>把裁剪空间的三角形变成"可以直接扫像素"的 <code>PreparedTriangle</code>：齐次裁剪 → 透视除法 → 视口变换 → 面积与绕序 → 包围盒 → top-left 标记。所有逐三角形的常量都在这里预先算好，像素循环里只做加乘。</p>`},
+ {id:"raster",lvl:"L2",name:"逐像素光栅化",parent:"frame",
+  intro:`<p><code>rasterizePreparedTriangle</code> 是热点函数，2048² 的测试场景里一帧 99% 的时间花在这里。对包围盒内每个像素中心：边函数判断是否在三角形内 → 深度插值与深度测试 → 透视校正插值属性 → 调用着色器 → 写颜色和深度。</p>`},
+ {id:"shade",lvl:"L3",name:"Blinn-Phong 着色",parent:"raster",
+  intro:`<p><code>BlinnPhongShader::shade</code> 对一个像素算颜色。流程：采样贴图并转到线性空间 → 取法线（插值法线或对象空间法线贴图）→ 对每盏点光源累加漫反射和高光 → 转回 sRGB 输出。</p>`},
+ {id:"tiles",lvl:"L2",name:"Tile 并行",parent:"frame",
+  intro:`<p>并行模式的核心设计：<b>每个 tile 只归一个线程</b>，像素写入不需要锁或原子操作；tile 内三角形保持提交顺序，所以输出和顺序版本逐位一致。参考机器（i7-12700KF，20 线程）上整帧中位数 340.7 ms → 33.7 ms，约 10.1 倍。</p>`}
+];
+
+/* node: [id, graph, x, y, w, kind, title, sub, ins, outs, drill, info] ; pins "name:Type" */
+const N = [];
+function node(o){N.push(o)}
+
+/* ===== frame ===== */
+node({id:"ev",g:"frame",x:40,y:180,w:200,k:"event",t:"renderScene",s:"每帧入口",outs:["▶:exec","scene:struct"],
+ info:{loc:"render.cpp#L311",sig:"RenderProfile Render::renderScene(const Scene& scene)",
+ what:`<p>一帧的总调度。持有 <code>frame_mutex_</code>，所以同一个 <code>Render</code> 对象不能被两个线程同时调用。每个阶段都用 <code>steady_clock</code> 打点，结果写进 <code>RenderProfile</code>（clear / setup / binning / raster / cleanup / total）。</p>`,
+ code:`std::lock_guard<std::mutex> frame_lock(frame_mutex_);
+// 1. 校验：渲染目标不能同时被当作贴图采样
+// 2. clearFrame
+// 3. view_projection = P * V（每帧一次）
+// 4. 对每个模型：M、法线矩阵、MVP（每模型一次）
+//    对每个三角形：变换 → clipTriangle → prepareTriangle
+// 5. Sequential：直接光栅化
+//    TiledParallel：分箱 → parallelFor(tile)`,
+ why:`<p>几何阶段（setup）只花约 1.6 ms，像素阶段约 337 ms（顺序模式，2048×2048，2492 个三角形，两盏灯，三张贴图）。所以只并行像素阶段就够了，这是一个由数据驱动的取舍。</p>`,
+ qa:[["为什么几何阶段不做并行？","按 Amdahl 定律，可并行部分的占比决定上限。setup 占整帧不到 1%，并行它几乎没有收益，还会引入三角形列表合并的同步开销。像素阶段占 99%，才是值得并行的部分。如果场景换成百万三角形、低分辨率，结论就会反过来。"],
+ ["这一帧里哪些东西是每帧、每模型、每三角形、每像素算的？","每帧：view_projection。每模型：model 矩阵、法线矩阵、MVP。每三角形：3 个顶点变换、裁剪、PreparedTriangle 的常量（面积、包围盒、top-left 标记）。每像素：3 个边函数、重心坐标、深度、透视校正属性、着色。把计算尽量往外层提，是光栅化器优化的基本思路。"]]}});
+node({id:"val",g:"frame",x:300,y:150,w:200,k:"func",t:"校验渲染目标",s:"内联 · 防读写冲突",ins:["▶:exec","scene:struct"],outs:["▶:exec"],
+ info:{loc:"render.cpp#L318",sig:"// renderScene 内联循环",
+ what:`<p>遍历所有三角形，确认 diffuse / normal / specular 贴图都不是当前的渲染目标 <code>image_</code>，否则抛异常。</p>`,
+ code:`if (primitive.diffuse_map == &image_ || primitive.normal_map == &image_ ||
+    primitive.specular_map == &image_) {
+    throw std::invalid_argument("The render target cannot also be sampled as a texture");
+}`,
+ why:`<p>一边写一张图一边从同一张图采样，结果取决于写入顺序，并行时更是数据竞争。GPU 上这叫 feedback loop，图形 API 同样不允许把同一纹理同时绑定为采样源和渲染目标。</p>`,qa:[]}});
+node({id:"clr",g:"frame",x:560,y:150,w:190,k:"func",t:"clearFrame",s:"深度 = +∞",ins:["▶:exec"],outs:["▶:exec","depth:float"],
+ info:{loc:"render.cpp#L101",sig:"void Render::clearFrame(const TGAColor& clear_color)",
+ what:`<p>深度缓冲填 <code>+∞</code>，颜色缓冲填清屏色。清屏色是纯黑时走 <code>image_.clear()</code> 快速路径（整块置零），否则逐像素写。</p>`,
+ code:`std::fill(depth_buffer_.begin(), depth_buffer_.end(),
+          std::numeric_limits<float>::infinity());
+if (clear_color is black ...) { image_.clear(); return; }`,
+ why:`<p>深度测试用的是"新深度 &lt; 旧深度才通过"，初始化成 +∞ 保证第一个覆盖的片元一定通过。在 2048² 下 clear 本身要约 1.9 ms，比整个几何阶段还贵。</p>`,
+ qa:[["clear 为什么这么贵？还能怎么优化？","2048×2048 的 float 深度缓冲是 16 MB，颜色 12 MB，纯粹是内存带宽。优化思路：tile 并行时让每个 tile 在自己的线程里清自己的区域；或者像 GPU 那样用 tile 级的 clear 标记（fast clear），首次写入时才真正初始化。"]]}});
+node({id:"xf",g:"frame",x:810,y:150,w:230,k:"macro",t:"矩阵与顶点变换",s:"每模型 / 每三角形",ins:["▶:exec","scene:struct"],outs:["▶:exec","tri:VertexOut[3]:struct","normal_m:Mat4"],drill:"xform",
+ info:{loc:"render.cpp#L333",sig:"// renderScene 第 333–360 行",
+ what:`<p>算出 view_projection，再对每个模型算 M、法线矩阵和 MVP；对每个三角形的 3 个顶点，输出裁剪空间位置、世界空间位置、世界空间法线和 UV，打包成 <code>VertexOut[3]</code>。</p>`,code:"",why:"",qa:[]}});
+node({id:"cl",g:"frame",x:1100,y:130,w:230,k:"func",t:"clipTriangle",s:"齐次空间 6 平面裁剪",ins:["▶:exec","tri:VertexOut[3]:struct"],outs:["▶:exec","tris:VertexOut[3][]:struct"],drill:"clip",
+ info:{loc:"render.cpp#L113",sig:"static std::vector<std::array<VertexOut,3>> Render::clipTriangle(const std::array<VertexOut,3>&)",
+ what:`<p>一个三角形进，0 到多个三角形出（裁剪后最多 9 边形，扇形拆成最多 7 个三角形）。详见子图。</p>`,code:"",why:"",qa:[]}});
+node({id:"pr",g:"frame",x:1390,y:130,w:250,k:"func",t:"prepareTriangle",s:"屏幕空间常量预计算",ins:["▶:exec","tri:VertexOut[3]:struct","primitive:Triangle:struct","normal_m:Mat4"],outs:["▶:exec","prepared:PreparedTriangle:struct","ok:bool"],drill:"clip",
+ info:{loc:"render.cpp#L170",sig:"bool Render::prepareTriangle(const std::array<VertexOut,3>&, const Triangle&, const Matrix4f&, PreparedTriangle&) const",
+ what:`<p>透视除法、视口变换、面积、绕序统一、包围盒、top-left 标记。退化或完全在屏幕外的三角形返回 false 直接丢弃。详见子图。</p>`,code:"",why:"",qa:[]}});
+node({id:"br",g:"frame",x:1700,y:170,w:200,k:"branch",t:"Branch",s:"options_.raster_mode",ins:["▶:exec","mode:int"],outs:["Sequential:exec","TiledParallel:exec"],
+ info:{loc:"render.cpp#L377",sig:"if (options_.raster_mode == RasterMode::Sequential) { ... } else { ... }",
+ what:`<p>两条路径共用完全相同的 <code>PreparedTriangle</code> 列表和同一个像素函数，区别只在"谁来扫哪些像素"。这让 A/B benchmark 是公平的：变量只有调度方式。</p>`,code:"",why:"",
+ qa:[["为什么要保留顺序模式？","它是正确性和性能的基线。测试里每帧都比较顺序和并行的颜色、深度缓冲是否完全相同；benchmark 也是 A/B 交替测这两种模式。"]]}});
+node({id:"sq",g:"frame",x:1960,y:40,w:250,k:"func",t:"rasterizePreparedTriangle",s:"顺序 · 范围 = 三角形包围盒",ins:["▶:exec","prepared:PreparedTriangle:struct","range:int"],outs:["▶:exec"],drill:"raster",
+ info:{loc:"render.cpp#L230",sig:"void Render::rasterizePreparedTriangle(const PreparedTriangle&, const Scene&, int min_x, int max_x, int min_y, int max_y)",
+ what:`<p>顺序模式下按提交顺序逐个三角形调用，范围就是三角形自己的包围盒。详见子图。</p>`,code:"",why:"",qa:[]}});
+node({id:"tl",g:"frame",x:1960,y:270,w:250,k:"par",t:"Tile 分箱 + 并行光栅化",s:"32×32 tile · 线程独占",ins:["▶:exec","prepared[]:PreparedTriangle[]:struct"],outs:["▶:exec"],drill:"tiles",
+ info:{loc:"render.cpp#L391",sig:"// renderScene 第 384–425 行",
+ what:`<p>把三角形按包围盒分到各个 tile 的列表里，再用常驻线程池并行处理 tile。详见子图。</p>`,code:"",why:"",qa:[]}});
+node({id:"ret",g:"frame",x:2280,y:170,w:200,k:"func",t:"返回 RenderProfile",s:"分阶段耗时",ins:["▶:exec"],outs:["profile:struct"],
+ info:{loc:"render.cpp#L428",sig:"return profile;",
+ what:`<p>释放临时的分箱和三角形列表（用 swap 技巧真正归还内存），记录 cleanup 和 total 耗时。benchmark 程序就是读这些字段做统计的。</p>`,
+ code:`std::vector<std::vector<std::size_t>>{}.swap(bins);
+std::vector<PreparedTriangle>{}.swap(prepared_triangles);`,
+ why:`<p><code>clear()</code> 只把 size 置零、不释放 capacity；和空 vector 交换才会真正释放内存。</p>`,qa:[]}});
+
+/* ===== xform ===== */
+node({id:"gv",g:"xform",x:40,y:40,w:220,k:"pure",t:"getViewMatrix",s:"右手 lookAt",ins:["camera:struct"],outs:["V:Mat4"],
+ info:{loc:"render.cpp#L513",sig:"Matrix4f Render::getViewMatrix(const Camera& camera) const",
+ what:`<p>用相机朝向构造正交基：<code>right = forward × up</code>，<code>up = right × forward</code>。矩阵的三行是 right、up、-forward，平移列是它们和相机位置的负点积。</p>`,
+ code:`const Vector3f forward = camera.forward.normalize();
+const Vector3f right = forward.cross(camera.up).normalize();
+const Vector3f up = right.cross(forward).normalize();
+return { {right, -right·pos}, {up, -up·pos},
+         {-forward, forward·pos}, {0,0,0,1} };`,
+ why:`<p>右手坐标系里相机看向 <b>-Z</b>，所以第三行放的是 -forward。旋转部分是正交矩阵，它的逆就是转置，所以视图矩阵 = 转置的旋转 × 反向平移，不需要求逆。</p>`,
+ qa:[["up 为什么要重新叉乘一遍？","用户给的 up 不一定和 forward 垂直，直接用会得到非正交的基。先用 forward × up 得到 right，再用 right × forward 得到真正垂直的 up，这就是 Gram-Schmidt 的叉乘版本。forward 和 up 平行时 right 会退化成零向量，这是 lookAt 的经典边界情况。"]]}});
+node({id:"gp",g:"xform",x:40,y:200,w:220,k:"pure",t:"getProjectionMatrix",s:"OpenGL 风格透视",ins:["camera:struct"],outs:["P:Mat4"],
+ info:{loc:"render.cpp#L525",sig:"Matrix4f Render::getProjectionMatrix(const Camera& camera) const",
+ what:`<p>标准 OpenGL 透视矩阵，把视锥映射到 NDC 立方体 [-1,1]³。先校验 fov、宽高比、near/far 合法，否则抛异常。</p>`,
+ code:`const float f = 1.0f / std::tan(fov_degrees * kPi / 360.0f);
+return { {f/aspect, 0, 0, 0},
+         {0, f, 0, 0},
+         {0, 0, -(far+near)/(far-near), -2*far*near/(far-near)},
+         {0, 0, -1, 0} };   // w_clip = -z_view`,
+ why:`<p>最后一行让 <code>w = -z_view</code>，即"到相机的距离"，透视除法就是除以它。z 经过除法后变成 1/z 的形式，所以 NDC 深度是非线性的。</p>`,
+ formula:"z_ndc = (A·z + B) / (-z),  A = -(f+n)/(f-n),  B = -2fn/(f-n)",
+ qa:[["NDC 深度为什么是非线性的？有什么后果？","z_ndc 和 1/z 成线性关系，精度大量集中在近平面附近，远处深度精度很差，容易 z-fighting。near 越小越严重。工业界常见改进是 reversed-Z：把 near 映射到 1、far 映射到 0，配合浮点数在 0 附近精度更高的特性，让远处精度大幅改善。"],
+ ["fov 为什么除以 360 而不是 180？","需要的是半角的正切：tan(fov/2)，而角度转弧度乘 π/180，合起来就是 fov·π/360。"]]}});
+node({id:"vp",g:"xform",x:330,y:120,w:200,k:"pure",t:"P × V",s:"view_projection · 每帧一次",ins:["P:Mat4","V:Mat4"],outs:["VP:Mat4"],
+ info:{loc:"render.cpp#L333",sig:"const Matrix4f view_projection = getProjectionMatrix(cam) * getViewMatrix(cam);",
+ what:`<p>每帧只算一次，所有模型共用。</p>`,code:"",why:`<p>矩阵乘法结合律让我们可以把 P·V·M 提前合成一个矩阵，每个顶点只做一次 4×4 乘法，而不是三次。</p>`,qa:[]}});
+node({id:"gm",g:"xform",x:40,y:370,w:220,k:"pure",t:"getModelMatrix",s:"T · Rz · Ry · Rx · S",ins:["model:struct"],outs:["M:Mat4"],
+ info:{loc:"render.cpp#L441",sig:"Matrix4f Render::getModelMatrix(const Model& model) const",
+ what:`<p>由模型的缩放、欧拉角旋转（度）和平移构造模型矩阵。</p>`,
+ code:`return translation * rotation_z * rotation_y * rotation_x * scale;`,
+ why:`<p>矩阵作用在列向量上（<code>M * v</code>），所以<b>最右边的最先作用</b>：先缩放，再依次绕 X、Y、Z 旋转，最后平移。如果先平移再缩放，平移量也会被缩放，物体会"飞走"。</p>`,
+ qa:[["为什么 S 必须在最右边、T 在最左边？","缩放和旋转应该围绕物体自身原点进行。如果平移先作用，后面的旋转就会绕世界原点转，物体会在世界里画圆，而不是原地转。"],
+ ["欧拉角有什么问题？","万向节死锁：当中间那个轴（这里是 Y）转到 ±90° 时，X 和 Z 的旋转轴重合，丢失一个自由度。插值时也不平滑。引擎里通常用四元数存旋转。"]]}});
+node({id:"gn",g:"xform",x:330,y:400,w:220,k:"pure",t:"getNormalMatrix",s:"(M₃ₓ₃)⁻¹ 的转置",ins:["M:Mat4"],outs:["N:Mat4"],
+ info:{loc:"render.cpp#L480",sig:"Matrix4f Render::getNormalMatrix(const Matrix4f& model_matrix) const",
+ what:`<p>只取 M 左上 3×3，用<b>余子式除以行列式</b>直接算出逆转置：<code>result[i][j] = 余子式(i,j) / det</code>。行列式太小（相对于系数量级）时返回单位阵。</p>`,
+ code:`result[0][0] = (a11*a22 - a12*a21) * inv_det;
+result[0][1] = (a12*a20 - a10*a22) * inv_det;
+...
+// 退化判定是相对的：|det| <= eps * scale³`,
+ why:`<p>伴随矩阵是余子式矩阵的转置，A⁻¹ = adj(A)/det。所以"余子式矩阵 / det"恰好等于 (A⁻¹)ᵀ，省掉了先求逆再转置两步。退化阈值乘了 <code>scale³</code>，因为 3×3 行列式随矩阵整体缩放按三次方变化，这样判断和模型尺寸无关。</p>`,
+ formula:"n' = (M⁻¹)ᵀ · n",
+ qa:[["法线为什么不能直接乘模型矩阵？","非均匀缩放会破坏垂直关系。比如把一个圆在 x 方向拉长成椭圆，直接用 M 变换法线，法线会朝 x 方向倾斜，不再垂直于表面。推导：切线 t 满足 nᵀt = 0，变换后 t' = Mt，要保持 n'ᵀt' = 0，就需要 n' = (M⁻¹)ᵀ n。"],
+ ["什么情况下可以直接用 M？","只有旋转和均匀缩放时，(M⁻¹)ᵀ 和 M 只差一个标量倍数，归一化后结果一样。很多引擎会对这种情况走快速路径。"]]}});
+node({id:"mvp",g:"xform",x:620,y:360,w:200,k:"pure",t:"VP × M",s:"MVP · 每模型一次",ins:["VP:Mat4","M:Mat4"],outs:["MVP:Mat4"],
+ info:{loc:"render.cpp#L341",sig:"const Matrix4f mvp = view_projection * model_matrix;",what:`<p>每个模型算一次，该模型所有顶点共用。</p>`,code:"",why:"",qa:[]}});
+node({id:"td",g:"xform",x:620,y:470,w:220,k:"pure",t:"transformDirection",s:"w = 0，忽略平移",ins:["N:Mat4","n_obj:Vec3"],outs:["n_world:Vec3"],
+ info:{loc:"render.cpp#L51",sig:"Vector3f transformDirection(const Matrix4f& matrix, const Vector3f& direction)",
+ what:`<p>把方向扩展成齐次坐标 <code>(x,y,z,0)</code> 后乘矩阵，再归一化。</p>`,
+ code:`const Vector4f t = matrix * Vector4f(direction, 0.0f);
+return Vector3f(t.x, t.y, t.z).normalize();`,
+ why:`<p>w = 0 时矩阵最后一列（平移）不起作用，因为方向没有位置，不该被平移。归一化是因为逆转置矩阵一般会改变长度。</p>`,qa:[]}});
+node({id:"vt",g:"xform",x:910,y:220,w:260,k:"func",t:"逐顶点变换",s:"内联 · 每三角形 ×3",ins:["▶:exec","MVP:Mat4","M:Mat4","n_world:Vec3","primitive:Triangle:struct"],outs:["▶:exec","tri:VertexOut[3]:struct"],
+ info:{loc:"render.cpp#L343",sig:"// for (const Triangle& primitive : model.faces) { ... }",
+ what:`<p>对三角形的每个顶点生成一个 <code>VertexOut</code>：裁剪空间位置、世界空间位置、世界空间法线、UV。模型没有顶点法线时退回到面法线。</p>`,
+ code:`transformed[i] = {
+    mvp * object_position,                         // clip_position
+    Vector3f(world4.x, world4.y, world4.z) / world_w, // world_position
+    transformDirection(normal_matrix, object_normal),  // world_normal
+    primitive.uv_coords[i]
+};`,
+ why:`<p>这就是软件版的 vertex shader。世界空间位置和法线留给着色阶段算光照，裁剪空间位置用于后面的裁剪和光栅化。</p>`,
+ qa:[["为什么着色在世界空间做，而不是视图空间？","都可以，只要光源、相机、片元在同一空间。世界空间的好处是光源位置不用每帧变换；视图空间的好处是相机永远在原点，view 向量好算。GPU 管线里两种都常见。"]]}});
+
+/* ===== clip ===== */
+node({id:"cd",g:"clip",x:40,y:40,w:220,k:"pure",t:"clipDistance",s:"到第 i 个裁剪面的距离",ins:["v:VertexOut:struct","plane:int"],outs:["d:float"],
+ info:{loc:"render.cpp#L25",sig:"float clipDistance(const VertexOut& vertex, int plane)",
+ what:`<p>六个平面对应 <code>-w ≤ x,y,z ≤ w</code>。返回 <code>w ± 分量</code>，≥ 0 表示在该平面内侧。</p>`,
+ code:`case 0: return p.w + p.x;   // 左   x >= -w
+case 1: return p.w - p.x;   // 右   x <=  w
+case 2: return p.w + p.y;   // 下
+case 3: return p.w - p.y;   // 上
+case 4: return p.w + p.z;   // 近
+default: return p.w - p.z;  // 远`,
+ why:`<p>在除以 w 之前判断，所以不需要担心 w 为 0 或负数。这些距离在裁剪空间里是线性的，可以直接用来求交点参数 t。</p>`,qa:[]}});
+node({id:"ip",g:"clip",x:40,y:220,w:220,k:"pure",t:"interpolate",s:"所有属性线性插值",ins:["a:VertexOut:struct","b:VertexOut:struct","t:float"],outs:["v:VertexOut:struct"],
+ info:{loc:"render.cpp#L16",sig:"VertexOut interpolate(const VertexOut& a, const VertexOut& b, float t)",
+ what:`<p>位置、世界坐标、法线、UV 全部按 <code>(1-t)·a + t·b</code> 插值，生成裁剪边上的新顶点。</p>`,code:"",
+ why:`<p>裁剪空间坐标是物体空间坐标的线性（仿射）变换，还没做透视除法，所以在这里线性插值所有属性都是正确的。如果在除以 w 之后再插值，就需要透视校正。</p>`,qa:[]}});
+node({id:"ct",g:"clip",x:330,y:110,w:240,k:"func",t:"clipTriangle",s:"Sutherland–Hodgman",ins:["▶:exec","tri:VertexOut[3]:struct","d:float","split:VertexOut:struct"],outs:["▶:exec","tris:VertexOut[3][]:struct"],
+ info:{loc:"render.cpp#L113",sig:"static std::vector<std::array<VertexOut,3>> Render::clipTriangle(const std::array<VertexOut,3>& triangle)",
+ what:`<p>把三角形当作多边形，依次对 6 个平面做 Sutherland–Hodgman：遍历每条边，内→内保留终点，内→外只保留交点，外→内保留交点和终点。最后把多边形扇形拆成三角形。</p>`,
+ code:`for (int plane = 0; plane < 6 && !polygon.empty(); ++plane) {
+    for (const VertexOut& current : polygon) {
+        if (previous_inside != current_inside) {
+            t = previous_distance / (previous_distance - current_distance);
+            clipped.push_back(interpolate(previous, current, t));
+        }
+        if (current_inside) clipped.push_back(current);
+        ...
+    }
+    polygon = std::move(clipped);
+}
+// 扇形拆分：(0, i, i+1)`,
+ why:`<p>交点参数 <code>t = d_prev / (d_prev - d_cur)</code> 来自距离在边上线性变化、在交点处为 0。一个三角形被 6 个平面切，每个平面最多加一个顶点，最多变成 9 边形。</p>`,
+ qa:[["为什么要在齐次空间裁剪，而不是除以 w 之后？","相机后方的顶点 w < 0，除以 w 后坐标符号翻转，会被投影到屏幕另一侧，产生跨越整个屏幕的错误三角形；w 接近 0 时还会除零。所以至少近平面必须在透视除法之前裁掉。"],
+ ["GPU 真的裁六个面吗？这里有什么可以改进的？","GPU 一般只严格裁近平面（和远平面），x/y 方向用 guard band：只要三角形在一个比屏幕大得多的范围内，就交给光栅化阶段的包围盒和 scissor 处理，不产生新三角形。这个实现裁全部 6 个面，简单正确，但屏幕边缘的三角形会被切出额外的三角形。由于后面包围盒已经 clamp 到屏幕范围，x/y 的裁剪其实可以省掉。"],
+ ["为什么用 kEpsilon 判断内侧？","d ≥ -ε 视为在内，避免恰好落在平面上的顶点因浮点误差被反复切出极小的碎三角形。"]]}});
+node({id:"pd",g:"clip",x:650,y:20,w:240,k:"pure",t:"透视除法 + 视口变换",s:"prepareTriangle 前半段",ins:["clip_pos:Vec4"],outs:["screen:Vec2","inv_w:float","ndc_z:float"],
+ info:{loc:"render.cpp#L178",sig:"// prepareTriangle 第 177–193 行",
+ what:`<p>除以 w 得到 NDC，再映射到像素坐标。y 轴翻转，因为图像第 0 行在顶部。同时保存 <code>1/w</code> 和 <code>z/w</code> 供后面插值使用。</p>`,
+ code:`const float inv_w = 1.0f / w;
+screen.x = (ndc_x * 0.5f + 0.5f) * width_;
+screen.y = (1.0f - (ndc_y * 0.5f + 0.5f)) * height_;
+ndc_z    = clip.z * inv_w;`,
+ why:`<p><code>1/w</code> 和 <code>z/w</code> 在屏幕空间是<b>线性</b>的，所以可以直接用屏幕重心坐标插值；而 UV、法线这些属性不是线性的，需要用 1/w 做透视校正。保存 inv_w 就是为此。</p>`,qa:[]}});
+node({id:"ef",g:"clip",x:650,y:210,w:240,k:"pure",t:"edgeFunction",s:"2D 叉积 = 2 × 有向面积",ins:["a:Vec2","b:Vec2","p:Vec2"],outs:["area:float"],
+ info:{loc:"render.cpp#L37",sig:"float edgeFunction(const Vector2f& a, const Vector2f& b, const Vector2f& point)",
+ what:`<p>计算向量 ab 和 ap 的 2D 叉积。符号表示 p 在边 ab 的哪一侧，绝对值是三角形 abp 面积的两倍。</p>`,
+ code:`return (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);`,
+ why:`<p>同一个函数用了两次：在这里算整个三角形的有向面积；在像素循环里对每个像素中心算三次，同时得到"是否在内部"和"重心坐标"。这是 Pineda 光栅化算法的核心，也是 GPU 光栅化的基础。</p>`,
+ formula:"E(p) = (b-a) × (p-a)，对 p 是线性函数",
+ qa:[["边函数为什么适合硬件？","它对 p 是线性的：x 加 1，E 只加一个常数。所以可以增量计算，也可以对多个像素并行计算，完全没有分支。GPU 用定点数实现它，配合 top-left 规则可以做到精确无缝。"]]}});
+node({id:"wd",g:"clip",x:960,y:120,w:220,k:"branch",t:"统一绕序",s:"area < 0 → 交换 v1、v2",ins:["area:float"],outs:["area>0:float"],
+ info:{loc:"render.cpp#L196",sig:"if (area < 0.0f) { std::swap(vertices[1], vertices[2]); area = -area; }",
+ what:`<p>面积为 0（退化）直接丢弃；面积为负就交换两个顶点，保证后续所有三角形绕序一致、面积为正。</p>`,code:"",
+ why:`<p>统一绕序后，像素循环里"三个边函数都 ≥ 0 才算内部"这一条规则对所有三角形都成立，也让 top-left 规则的判断方向固定。</p>`,
+ qa:[["这里有背面剔除吗？","没有。负面积的三角形被翻转后照样光栅化，所以正面背面都会画。如果要背面剔除，在这里直接 return false 就行，能省掉大约一半的三角形。面试被问到可以主动指出这一点。"]]}});
+node({id:"bb",g:"clip",x:960,y:290,w:220,k:"pure",t:"像素包围盒",s:"clamp 到帧缓冲",ins:["screen×3:Vec2"],outs:["min/max:int"],
+ info:{loc:"render.cpp#L208",sig:"// prepareTriangle 第 203–213 行",
+ what:`<p><code>min = floor(min_screen)</code>，<code>max = ceil(max_screen) - 1</code>，再 clamp 到 [0, width-1] 和 [0, height-1]。为空则丢弃。</p>`,code:"",
+ why:`<p>采样点是像素中心 (x+0.5, y+0.5)。像素 x 的中心落在 [x, x+1) 区间内，所以 ceil(max)-1 是最后一个可能被覆盖的像素。clamp 也顺带承担了屏幕边界的裁剪。</p>`,qa:[]}});
+node({id:"tlf",g:"clip",x:960,y:440,w:220,k:"pure",t:"isTopLeftEdge × 3",s:"共享边归属规则",ins:["edges:Vec2"],outs:["top_left:bool[3]:bool"],
+ info:{loc:"render.cpp#L41",sig:"bool isTopLeftEdge(const Vector2f& a, const Vector2f& b)",
+ what:`<p>判断一条边是不是"上边"或"左边"。在这个仓库的约定下（屏幕 y 向下，面积已统一为正）：<code>dy < 0</code> 是左边，<code>dy == 0 且 dx > 0</code> 是上边。</p>`,
+ code:`const float dx = b.x - a.x, dy = b.y - a.y;
+return dy < 0.0f || (std::abs(dy) <= kEpsilon && dx > 0.0f);`,
+ why:`<p>可以用一个例子验证：a=(0,0)、b=(1,0)、c=(0,1)，面积为正。a→b 水平向右，是上边；c→a 向上（dy<0），是左边（x=0）；b→c 是斜边，在右下方，不是 top-left。和规则判断一致。</p>`,
+ qa:[["top-left 规则解决什么问题？","两个三角形共享一条边时，恰好落在边上的像素中心如果两边都画，会重复着色（半透明混合会出错）；如果都不画，会出现裂缝。规则规定：边上的像素只属于把这条边当作上边或左边的那个三角形，保证每个像素被恰好画一次。D3D 和 OpenGL 都用这个规则。"],
+ ["为什么要在 prepare 阶段算好？","三条边的 top-left 属性对整个三角形是常量，提前算好，像素循环里就只剩一次比较。"]]}});
+node({id:"pt",g:"clip",x:1260,y:180,w:260,k:"func",t:"prepareTriangle",s:"打包 PreparedTriangle",ins:["▶:exec","tris:VertexOut[3][]:struct","screen:Vec2","inv_w:float","area>0:float","min/max:int","top_left:bool[3]:bool"],outs:["▶:exec","prepared:PreparedTriangle:struct","ok:bool"],
+ info:{loc:"render.cpp#L170",sig:"bool Render::prepareTriangle(const std::array<VertexOut,3>&, const Triangle&, const Matrix4f&, PreparedTriangle&) const",
+ what:`<p>把上面所有结果打包：3 个 <code>RasterVertex</code>（屏幕坐标、inv_w、ndc_z、世界位置、法线、UV）、面积、包围盒、top-left 标记、图元指针和法线矩阵。任何一步失败（w≈0、退化、屏幕外）返回 false。</p>`,
+ code:`prepared.vertices = vertices;
+prepared.area = area;
+prepared.min_x = min_x; prepared.max_x = max_x; ...
+prepared.top_left = { isTopLeftEdge(v1, v2),
+                      isTopLeftEdge(v2, v0),
+                      isTopLeftEdge(v0, v1) };`,
+ why:`<p>相当于 GPU 的 triangle setup 阶段。注意 top_left[i] 对应的是"顶点 i 的对边"，和像素循环里 e0/e1/e2 的定义一一对应。</p>`,qa:[]}});
+
+/* ===== raster ===== */
+node({id:"re",g:"raster",x:40,y:150,w:260,k:"func",t:"rasterizePreparedTriangle",s:"范围 = 包围盒 ∩ 给定区域",ins:["▶:exec","prepared:PreparedTriangle:struct","range:int"],outs:["▶:exec","verts:RasterVertex[3]:struct"],
+ info:{loc:"render.cpp#L230",sig:"void Render::rasterizePreparedTriangle(const PreparedTriangle&, const Scene&, int min_x, int max_x, int min_y, int max_y)",
+ what:`<p>先把扫描范围收缩为"三角形包围盒 ∩ 传入的范围"。顺序模式传入的就是包围盒本身；tile 模式传入的是 tile 的矩形，这样每个线程只写自己 tile 的像素。</p>`,
+ code:`min_x = std::max(min_x, triangle.min_x);
+max_x = std::min(max_x, triangle.max_x);
+...`,
+ why:`<p>同一个函数服务两种调度，"写哪里"完全由调用者传入的范围决定。这是 tile 并行能做到无锁的关键。</p>`,qa:[]}});
+node({id:"lp",g:"raster",x:360,y:120,w:220,k:"macro",t:"For y, x",s:"像素中心 (x+0.5, y+0.5)",ins:["▶:exec","range:int"],outs:["循环体:exec","sample:Vec2"],
+ info:{loc:"render.cpp#L247",sig:"for (int y = min_y; y <= max_y; ++y) for (int x = min_x; x <= max_x; ++x)",
+ what:`<p>逐像素双重循环，在像素中心采样。每个像素都从头计算三个边函数。</p>`,code:"",
+ why:`<p>实现最直接，但不是最快的。</p>`,
+ qa:[["这个循环还能怎么优化？","1）增量计算：边函数对 x 线性，x 加 1 只需加一个常数 (b.y-a.y) 的相反数，省掉乘法。2）SIMD：一次算 4 或 8 个像素的边函数。3）分层拒绝：先测 8×8 块的四个角，整块在外直接跳过，整块在内省掉逐像素测试。4）提前退出：一行里从内部走出后就可以 break。这些都是 GPU 光栅器的标准手段。"]]}});
+node({id:"e3",g:"raster",x:640,y:40,w:220,k:"pure",t:"edgeFunction × 3",s:"e0, e1, e2",ins:["sample:Vec2","verts:RasterVertex[3]:struct"],outs:["e0..e2:float"],
+ info:{loc:"render.cpp#L250",sig:"e0 = edge(v1,v2,p); e1 = edge(v2,v0,p); e2 = edge(v0,v1,p);",
+ what:`<p>ei 是像素中心和"顶点 i 的对边"组成的小三角形的两倍有向面积。</p>`,code:"",
+ why:`<p>e0 对应 v0 的对边，所以 e0/area 恰好是 v0 的重心坐标权重。离 v0 越近，对面那个小三角形越大。</p>`,qa:[]}});
+node({id:"ps",g:"raster",x:930,y:40,w:220,k:"branch",t:"passesEdge × 3",s:"内部测试 + top-left",ins:["▶:exec","e0..e2:float","top_left:bool[3]:bool"],outs:["在内部:exec"],
+ info:{loc:"render.cpp#L47",sig:"bool passesEdge(float value, bool top_left)",
+ what:`<p>严格在内（> ε）直接通过；恰好在边上（|e| ≤ ε）时，只有 top-left 边才算通过。</p>`,
+ code:`return value > kEpsilon || (std::abs(value) <= kEpsilon && top_left);`,
+ why:`<p>"恰好在边上"用 ε 判断，是浮点实现的近似。</p>`,
+ qa:[["用浮点 ε 判断边界有什么问题？GPU 怎么做？","浮点误差会让同一条共享边在两个三角形里算出的 e 不完全相反，ε 只能缓解不能根治，极端情况仍可能出现重复或漏像素。GPU 把顶点坐标吸附到定点亚像素网格（比如 8 位小数精度），边函数用整数精确计算，top-left 规则才能严格保证每个像素恰好被画一次。"]]}});
+node({id:"bc",g:"raster",x:930,y:230,w:220,k:"pure",t:"重心坐标",s:"λi = ei / area",ins:["e0..e2:float","area:float"],outs:["λ:Vec3"],
+ info:{loc:"render.cpp#L259",sig:"const float lambda0 = e0 / area; ...",
+ what:`<p>屏幕空间的重心坐标，三者之和为 1。</p>`,code:"",
+ why:`<p>注意这是<b>屏幕空间</b>的重心坐标，直接用来插值 UV 是错的（会有仿射纹理扭曲），必须先做透视校正。</p>`,qa:[]}});
+node({id:"dz",g:"raster",x:1220,y:230,w:220,k:"pure",t:"深度插值",s:"屏幕空间线性即可",ins:["λ:Vec3","ndc_z×3:float"],outs:["depth:float"],
+ info:{loc:"render.cpp#L262",sig:"ndc_depth = Σ λi · ndc_z_i;  depth = ndc_depth * 0.5 + 0.5;",
+ what:`<p>直接用屏幕重心坐标插值 NDC z，再映射到 [0,1]。超出 [0,1] 的丢弃。</p>`,code:"",
+ why:`<p>z_ndc = z_clip / w，它在屏幕空间是线性的，所以<b>深度不需要透视校正</b>，而 UV 需要。这是个经典面试点。</p>`,
+ qa:[["为什么深度可以直接线性插值，UV 却不行？","透视投影把三维平面映射到屏幕时，任何形如 a/w 的量在屏幕空间都是线性的。z_ndc = z_clip/w 正好是这种形式，所以可以直接插值。UV 本身不带 /w，在屏幕上不是线性的，需要先插值 uv/w 和 1/w，再相除恢复。"]]}});
+node({id:"zt",g:"raster",x:1220,y:40,w:220,k:"branch",t:"深度测试",s:"depth < buffer 才通过",ins:["▶:exec","depth:float"],outs:["通过:exec"],
+ info:{loc:"render.cpp#L270",sig:"if (depth >= depth_buffer_[index]) continue;",
+ what:`<p>严格小于才通过，相等则保留先画的那个。</p>`,code:"",
+ why:`<p>深度测试在着色<b>之前</b>做，被挡住的像素不用算光照，相当于 GPU 的 early-z。但如果后来的三角形更近，前面已经着色的像素还是白算了（overdraw）。</p>`,
+ qa:[["相等时保留先画的，对确定性有什么意义？","深度相同时，谁胜出取决于绘制顺序。tile 并行版本里每个 tile 内保持三角形的提交顺序，所以平局的结果和顺序版本完全一样，这是两种模式能逐位一致的原因之一。"],
+ ["overdraw 怎么减少？","1）先做一遍只写深度的 z-prepass，第二遍只给深度相等的像素着色；2）延迟着色，先把几何属性写进 G-Buffer，最后每个像素只着色一次；3）粗略的前后排序。你 OpenGL 项目里的 Deferred 就是第二种。"]]}});
+node({id:"pc",g:"raster",x:1510,y:40,w:240,k:"pure",t:"perspectiveInterpolate",s:"透视校正 UV",ins:["uv×3:Vec2","inv_w×3:float","λ:Vec3"],outs:["uv:Vec2"],
+ info:{loc:"render.cpp#L153",sig:"static Vector2f Render::perspectiveInterpolate(const std::array<Vector2f,3>&, const std::array<float,3>& inverse_w, const Vector3f& barycentric)",
+ what:`<p>先插值 uv/w 和 1/w，再相除。</p>`,
+ code:`denom = λ0*inv_w0 + λ1*inv_w1 + λ2*inv_w2;
+return (uv0*(λ0*inv_w0) + uv1*(λ1*inv_w1) + uv2*(λ2*inv_w2)) / denom;`,
+ formula:"uv = Σ λi·uvᵢ/wᵢ  ÷  Σ λi/wᵢ",
+ why:`<p>不做校正时，大角度倾斜的平面上纹理会沿对角线扭曲（PS1 时代的经典画面）。</p>`,
+ qa:[["推导一下透视校正公式？","屏幕上线性的是 1/w 和 a/w（a 为任意顶点属性）。所以可以用屏幕重心坐标插值得到像素处的 (a/w) 和 (1/w)，两者相除就得到正确的 a。这里把 λi/wᵢ 除以它们的和，就是校正后的权重。"]]}});
+node({id:"at",g:"raster",x:1510,y:230,w:240,k:"pure",t:"位置 / 法线插值",s:"同一组校正权重",ins:["λ:Vec3","inv_w×3:float"],outs:["frag_pos:Vec3","normal:Vec3"],
+ info:{loc:"render.cpp#L278",sig:"weight_i = λi * inv_w_i / denominator;",
+ what:`<p>用同样的透视校正权重插值世界位置和法线，法线再重新归一化（线性插值后长度会变短）。</p>`,code:"",
+ why:`<p>代码里 <code>weight0..2</code> 和 <code>perspectiveInterpolate</code> 算的是同一组权重，UV 走函数、位置和法线手写了一遍，有一点重复。</p>`,qa:[]}});
+node({id:"sh",g:"raster",x:1820,y:110,w:220,k:"func",t:"Shader::shade",s:"Blinn-Phong",ins:["▶:exec","uv:Vec2","frag_pos:Vec3","normal:Vec3"],outs:["▶:exec","color:Color"],drill:"shade",
+ info:{loc:"Shader.cpp#L33",sig:"TGAColor BlinnPhongShader::shade(const ShadingPixel& pixel) const",
+ what:`<p>虚函数调用，传入 <code>ShadingPixel</code>（UV、片元位置、相机位置、法线、图元、法线矩阵、灯光列表）。详见子图。</p>`,code:"",why:"",qa:[]}});
+node({id:"wr",g:"raster",x:2100,y:110,w:200,k:"func",t:"写入颜色与深度",s:"image_.set + depth_buffer_",ins:["▶:exec","color:Color","depth:float"],outs:["▶:exec"],
+ info:{loc:"render.cpp#L305",sig:"image_.set(x, y, shader_->shade(pixel)); depth_buffer_[index] = depth;",
+ what:`<p>颜色和深度一起写。没有混合，后写的直接覆盖。</p>`,code:"",
+ why:`<p>tile 模式下，这里写的像素一定在本线程独占的 tile 内，所以不需要锁。</p>`,qa:[]}});
+
+/* ===== shade ===== */
+node({id:"sd",g:"shade",x:40,y:40,w:230,k:"pure",t:"sampleDiffuse → bilinear",s:"Triangle.cpp",ins:["uv:Vec2"],outs:["srgb:Vec3"],
+ info:{loc:"Triangle.cpp#L43",sig:"template<class Sample> Sample bilinear(const TGAImage&, const Vector2f& uv, Sample(*read)(const TGAImage&,int,int))",
+ what:`<p>UV clamp 到 [0,1]，映射到 <code>[0, W-1]</code> 的连续坐标，取周围 4 个 texel 做双线性插值。没有贴图时返回白色。</p>`,
+ code:`const float x = clamp01(uv.x) * (width - 1);
+const float y = clamp01(uv.y) * (height - 1);
+top    = c00*(1-tx) + c10*tx;
+bottom = c01*(1-tx) + c11*tx;
+return top*(1-ty) + bottom*ty;`,
+ why:`<p>用模板 + 函数指针让 RGB 和单通道采样共用一份代码。寻址方式相当于 clamp（不支持 repeat）。</p>`,
+ qa:[["这个双线性和 GPU 的有什么区别？","GPU 把 texel 中心放在 (i+0.5)/W，采样坐标是 u·W - 0.5；这里用 u·(W-1)，两端对齐到边缘 texel 的中心，会有极小的整体缩放偏差。另外只支持 clamp 寻址，没有 repeat / mirror。"],
+ ["没有 mipmap 会怎样？","物体变远、一个像素覆盖很多 texel 时，双线性只取 4 个点，会严重欠采样，出现闪烁和摩尔纹。mipmap 预先做好逐级下采样的图，按像素覆盖范围选层级，三线性再在两层之间插值。这是后续可以补的点，也和 NTC 的过滤问题直接相关。"]]}});
+node({id:"sl",g:"shade",x:330,y:40,w:200,k:"pure",t:"srgbToLinear",s:"贴图解码到线性",ins:["srgb:Vec3"],outs:["linear:Vec3"],
+ info:{loc:"Shader.cpp#L20",sig:"float srgbToLinear(float value)",
+ what:`<p>标准 sRGB 分段曲线：≤ 0.04045 段线性，其余为 2.4 次幂。</p>`,
+ code:`return v <= 0.04045f ? v / 12.92f
+                     : std::pow((v + 0.055f) / 1.055f, 2.4f);`,
+ why:`<p>颜色贴图是按 sRGB 存的，光照必须在线性空间算（光能是线性叠加的），最后再编码回 sRGB 输出。法线贴图和高光贴图存的是数据不是颜色，不做这个转换，代码里也确实没有。</p>`,
+ qa:[["不做线性化会怎样？","在 gamma 空间做光照，暗部和亮部的叠加都会错：光照衰减看起来过快，两盏灯叠加会过曝或偏暗，高光边缘颜色发灰。这是「线性工作流」的基本要求。"]]}});
+node({id:"ab",g:"shade",x:590,y:40,w:200,k:"pure",t:"× base_color",s:"albedo",ins:["linear:Vec3","base:Vec3"],outs:["albedo:Vec3"],
+ info:{loc:"Shader.cpp#L41",sig:"const Vector3f albedo = texture_albedo.cwise(material.base_color);",what:`<p>贴图颜色逐分量乘材质基础色。</p>`,code:"",why:"",qa:[]}});
+node({id:"em",g:"shade",x:40,y:250,w:200,k:"branch",t:"isEmissive?",s:"自发光直接返回",ins:["▶:exec"],outs:["是 → 输出:exec","否:exec"],
+ info:{loc:"Shader.cpp#L43",sig:"if (material.isEmissive()) return TGAColor(emission ...);",
+ what:`<p>发光材质（比如 Cornell 场景的灯）不参与光照，直接输出发光颜色。</p>`,code:"",why:"",qa:[]}});
+node({id:"nm",g:"shade",x:300,y:250,w:220,k:"pure",t:"sampleObjectNormal",s:"对象空间法线贴图",ins:["uv:Vec2"],outs:["n_obj:Vec3"],
+ info:{loc:"Triangle.cpp#L102",sig:"Vector3f Triangle::sampleObjectNormal(const Vector2f& uv) const",
+ what:`<p>采样后从 [0,1] 解码到 [-1,1] 并归一化。</p>`,
+ code:`return (encoded * 2.0f - Vector3f(1.0f)).normalize();`,
+ why:`<p>这是<b>对象空间</b>法线贴图（贴图里存的就是模型空间的法线方向），所以只需要乘法线矩阵，不需要切线和 TBN 矩阵。</p>`,
+ qa:[["对象空间和切线空间法线贴图有什么区别？","对象空间：直接存模型空间法线，不需要切线，计算便宜，但贴图和这个模型绑死，不能复用到其他模型、不能用于蒙皮变形网格，UV 镜像也会出错。切线空间：存相对于表面的扰动，偏蓝色，可以复用和变形，但需要每顶点切线和 TBN 变换。游戏里绝大多数用切线空间。"]]}});
+node({id:"tw",g:"shade",x:580,y:250,w:220,k:"pure",t:"transformDirection",s:"× 法线矩阵",ins:["N:Mat4","n_obj:Vec3"],outs:["normal:Vec3"],
+ info:{loc:"Shader.cpp#L8",sig:"Vector3f transformDirection(const Matrix4f&, const Vector3f&)",
+ what:`<p>用逆转置矩阵把对象空间法线变到世界空间。没有法线贴图时用插值来的顶点法线。</p>`,code:"",
+ why:`<p>和 render.cpp 里有一份同名的匿名命名空间函数，两份实现相同，属于可以合并的重复代码。</p>`,qa:[]}});
+node({id:"ss",g:"shade",x:300,y:430,w:220,k:"pure",t:"sampleShininess",s:"高光指数",ins:["uv:Vec2"],outs:["shininess:float"],
+ info:{loc:"Triangle.cpp#L108",sig:"float Triangle::sampleShininess(const Vector2f& uv) const",
+ what:`<p>灰度高光贴图 × 255 作为指数，最小为 1；没有贴图时默认 32。</p>`,code:"",why:"",qa:[]}});
+node({id:"lt",g:"shade",x:880,y:160,w:250,k:"macro",t:"For each Light",s:"环境 + Lambert + Blinn",ins:["▶:exec","albedo:Vec3","normal:Vec3","shininess:float"],outs:["▶:exec","linear_color:Vec3"],
+ info:{loc:"Shader.cpp#L65",sig:"for (const Light& light : pixel.lights) { ... }",
+ what:`<p>先给一个很小的环境光 <code>0.035 × albedo</code>，再对每盏点光源累加漫反射和高光。</p>`,
+ code:`radiance = light.intensity / distance_squared;        // 平方反比衰减
+n_dot_l  = max(0, N·L);
+color   += albedo * radiance * n_dot_l;                 // Lambert
+if (n_dot_l > 0) {
+    H = normalize(V + L);
+    color += radiance * 0.35 * pow(max(0, N·H), shininess); // Blinn
+}`,
+ formula:"L_o = 0.035·ρ + Σ (E/d²) · [ ρ·max(0,N·L) + 0.35·max(0,N·H)^s ]",
+ why:`<p>高光只在 N·L > 0 时加，避免背光面出现高光。高光颜色是光源颜色（白色），不乘 albedo，这是 Blinn-Phong 对非金属的近似。</p>`,
+ qa:[["Blinn-Phong 和 Phong 的区别？","Phong 用反射向量 R 和视线 V 的夹角；Blinn 用半程向量 H 和法线 N 的夹角。H 更便宜（不用算反射），而且在掠射角下 R·V 可能超过 90° 导致高光突然截断，N·H 不会。同样的视觉效果，Blinn 的指数大约要是 Phong 的 4 倍。"],
+ ["这个模型哪些地方不符合物理？","不能量守恒（漫反射加高光可能超过入射能量）；没有 Fresnel；环境光是常数；高光指数是经验参数。PBR 用微表面 BRDF（GGX + Schlick Fresnel + Smith 几何项）解决这些问题，你的 OpenGL 项目就是 PBR。"]]}});
+node({id:"tb",g:"shade",x:1190,y:160,w:220,k:"pure",t:"linearToSrgb → toByte",s:"编码输出",ins:["linear_color:Vec3"],outs:["color:Color"],
+ info:{loc:"Shader.cpp#L13",sig:"unsigned char toByte(float value)",
+ what:`<p>clamp 到 [0,1]，线性转 sRGB，乘 255 四舍五入。</p>`,code:"",
+ why:`<p>超过 1 的部分直接被截断，没有色调映射，亮处会过曝成纯白。光追那条路径用了 ACES 色调映射，光栅化这条没有，可以对比着讲。</p>`,qa:[]}});
+
+/* ===== tiles ===== */
+node({id:"bn",g:"tiles",x:40,y:100,w:250,k:"func",t:"Tile 分箱",s:"单线程 · 按包围盒",ins:["▶:exec","prepared[]:PreparedTriangle[]:struct","tile_size:int"],outs:["▶:exec","bins:int[][]:int"],
+ info:{loc:"render.cpp#L391",sig:"// renderScene 第 384–405 行",
+ what:`<p>对每个三角形，算出包围盒覆盖的 tile 范围，把三角形下标追加到这些 tile 的列表里。按三角形顺序遍历，所以每个列表天然保持提交顺序。</p>`,
+ code:`for (triangle_index ...) {
+    first_tile_x = tri.min_x / tile_size;  last_tile_x = tri.max_x / tile_size;
+    ...
+    bins[tile_y * tiles_x + tile_x].push_back(triangle_index);
+}`,
+ why:`<p>参考测试里分箱只要约 0.44 ms。用包围盒分箱是<b>保守</b>的：长条斜三角形的包围盒会覆盖很多它实际不经过的 tile，这些 tile 会白跑一遍包围盒内的像素测试。</p>`,
+ qa:[["分箱可以怎么改进？","1）精确判断三角形和 tile 矩形是否相交（用边函数测 tile 的四个角），去掉假阳性；2）大量三角形时分箱本身也可以并行，每个线程有自己的局部 bin 最后合并，但要注意合并后保持提交顺序；3）这正是移动端 GPU（TBDR）的思路。"]]}});
+node({id:"pf",g:"tiles",x:360,y:100,w:250,k:"par",t:"WorkerPool::parallelFor",s:"发布任务 · 调用者参与",ins:["▶:exec","job_count:int","job:Fn"],outs:["▶:exec"],
+ info:{loc:"WorkerPool.cpp#L42",sig:"void WorkerPool::parallelFor(std::size_t job_count, const std::function<void(std::size_t)>& job)",
+ what:`<p>在锁内发布本批任务：设置 job、job_count，重置计数器，<code>++generation_</code>；然后 notify_all 唤醒后台线程，<b>调用线程自己也去跑 runJobs</b>；最后等所有后台线程完成，把第一个捕获的异常重新抛出。</p>`,
+ code:`{ lock; job_ = job; job_count_ = n; next_job_ = 0;
+  completed_workers_ = 0; dispatch_active_ = true; ++generation_; }
+work_available_.notify_all();
+runJobs();                       // 调用线程也干活
+work_complete_.wait(lock, [&]{ return completed_workers_ == threads_.size(); });
+if (exception) std::rethrow_exception(exception);`,
+ why:`<p>线程在构造时创建一次（参考测试里 19 个后台线程跑了 110 批，没有重建）；如果每帧创建和 join 线程，同样的测试需要 2090 次线程生命周期。调用者参与工作，20 个参与者只需要 19 个后台线程。</p>`,
+ qa:[["为什么任务数据可以用 relaxed 原子读？","job_、job_count_ 这些都是在互斥锁里写的，后台线程被唤醒后也是在同一个锁里看到新的 generation。锁的释放和获取建立了 happens-before 关系，所以之后读这些数据是安全的，next_job_ 只需要原子性，不需要额外的内存序。"],
+ ["dispatch_active_ 防的是什么？","防止两个线程同时调用同一个池的 parallelFor，或者在任务内部递归调用。这个池不支持嵌套并行，检测到就直接抛 logic_error，而不是死锁。"]]}});
+node({id:"lb",g:"tiles",x:360,y:330,w:250,k:"pure",t:"job(tile_index)",s:"lambda · 算 tile 矩形",ins:["tile_index:int"],outs:["tile_rect:int","bin:int[]:int"],
+ info:{loc:"render.cpp#L413",sig:"[&](std::size_t tile_index) { ... }",
+ what:`<p>从一维下标算出 tile 的 (x, y) 和像素矩形（最后一列 / 一行可能不满 32），然后按顺序光栅化这个 tile 列表里的所有三角形。</p>`,
+ code:`tile_min_x = tile_x * tile_size;
+tile_max_x = std::min(width_, tile_min_x + tile_size) - 1;
+for (idx : bins[tile_index])
+    rasterizePreparedTriangle(prepared[idx], scene,
+        tile_min_x, tile_max_x, tile_min_y, tile_max_y);`,
+ why:`<p>lambda 用引用捕获，所有线程共享只读的 prepared_triangles 和 bins，只写自己 tile 的像素。</p>`,qa:[]}});
+node({id:"rj",g:"tiles",x:700,y:60,w:240,k:"func",t:"runJobs",s:"原子计数器动态领取",ins:["▶:exec"],outs:["▶:exec"],
+ info:{loc:"WorkerPool.cpp#L110",sig:"void WorkerPool::runJobs()",
+ what:`<p>每个参与者循环 <code>next_job_.fetch_add(1)</code> 领下一个 tile，直到领完。任务抛异常时用 CAS 设置取消标志，只有第一个异常被保存。</p>`,
+ code:`while (!cancelled_.load(acquire)) {
+    const size_t i = next_job_.fetch_add(1, relaxed);
+    if (i >= job_count_) return;
+    try { job_(i); }
+    catch (...) { if (cancelled_.compare_exchange_strong(...))
+                      worker_exception_ = std::current_exception();
+                  return; }
+}`,
+ why:`<p>动态领取而不是静态均分：有人脸的 tile 很重、背景 tile 几乎是空的，静态划分会让某些线程早早闲下来。一个原子计数器就实现了简单的负载均衡。</p>`,
+ qa:[["动态调度的代价是什么？tile 大小怎么选？","每领一个任务一次原子操作，多核争用同一个缓存行。tile 太小，原子操作和调度开销占比上升；tile 太大，任务数太少，负载不均衡。32×32 在 2048² 下是 4096 个 tile，对 20 个线程足够细。可以把 tile_size 作为 benchmark 的变量扫一遍。"]]}});
+node({id:"wl",g:"tiles",x:700,y:270,w:240,k:"event",t:"workerLoop",s:"后台线程主循环",outs:["▶:exec"],
+ info:{loc:"WorkerPool.cpp#L83",sig:"void WorkerPool::workerLoop()",
+ what:`<p>后台线程等待 <code>generation_</code> 变化（或停止信号），变化了就记下新代数、跑 runJobs，跑完把 completed_workers_ 加一，最后一个完成的线程通知调用者。</p>`,
+ code:`work_available_.wait(lock, [&]{
+    return stopping_ || generation_ != observed_generation; });
+observed_generation = generation_;
+runJobs();
+if (++completed_workers_ == threads_.size()) work_complete_.notify_one();`,
+ why:`<p>用代数（generation）而不是布尔标志来判断"有新任务"，可以正确处理虚假唤醒，也能区分"新的一批"和"刚处理完的那批"，避免同一批被跑两次或漏掉。</p>`,
+ qa:[["为什么不用简单的 bool has_work？","bool 需要有人负责把它复位，复位时机和多个线程的唤醒顺序很难协调：可能有线程还没醒来，标志就被下一批覆盖了。代数单调递增，每个线程只关心「和我上次看到的是否不同」，天然避免这些竞态。"]]}});
+node({id:"rt",g:"tiles",x:1020,y:330,w:250,k:"func",t:"rasterizePreparedTriangle",s:"范围 = tile 矩形",ins:["▶:exec","tile_rect:int","bin:int[]:int"],outs:["▶:exec"],drill:"raster",
+ info:{loc:"render.cpp#L230",sig:"rasterizePreparedTriangle(tri, scene, tile_min_x, tile_max_x, tile_min_y, tile_max_y)",
+ what:`<p>和顺序模式是同一个函数，只是范围被限制在 tile 内。跨多个 tile 的三角形会被多个线程各自光栅化自己那一块。</p>`,code:"",why:"",qa:[]}});
+node({id:"bar",g:"tiles",x:1020,y:80,w:250,k:"func",t:"完成屏障",s:"等待 + 异常回抛",ins:["▶:exec"],outs:["▶:exec"],
+ info:{loc:"WorkerPool.cpp#L68",sig:"work_complete_.wait(...); if (exception) std::rethrow_exception(exception);",
+ what:`<p>调用线程跑完自己领到的任务后，等所有后台线程报告完成，再返回。</p>`,code:"",
+ why:`<p>结果：参考机器上整帧中位数从 340.7 ms 降到 33.7 ms，约 10.1 倍；三次重复运行加速比都在 10.0–10.1 倍之间，顺序和并行输出的 SHA-256 完全相同。</p>`,
+ qa:[["为什么输出能和顺序版本逐位一致？","三个条件：1）每个像素只属于一个 tile，只被一个线程写，没有竞争；2）每个 tile 内三角形按提交顺序处理，所以每个像素看到的三角形序列和顺序版本完全相同；3）每个像素的计算本身是同一份代码，浮点运算顺序一样。深度相等时先画的胜出，平局结果也一致。"],
+ ["20 个线程为什么只有 10 倍？","1）i7-12700KF 是 8 个大核 + 4 个小核，20 个逻辑线程里有超线程，两个超线程共享一个核心的执行单元；2）clear 和 setup 约 3.5 ms 是串行的，按 Amdahl 定律限制上限；3）tile 负载不均衡；4）像素着色要读贴图、写帧缓冲，会受内存带宽限制。"]]}});
+
+/* comments */
+const COMMENTS = [
+ {g:"frame",x:790,y:90,w:870,h:270,t:"对每个模型的每个三角形（单线程几何阶段）"},
+ {g:"xform",x:20,y:-10,w:530,h:330,t:"每帧一次"},
+ {g:"xform",x:20,y:340,w:840,h:240,t:"每模型一次"},
+ {g:"clip",x:630,y:-30,w:570,h:600,t:"prepareTriangle 内部"},
+ {g:"raster",x:340,y:0,w:1980,h:380,t:"像素循环体（热点）"},
+ {g:"tiles",x:680,y:20,w:610,h:450,t:"每个参与线程（调用者 + 后台线程）"}
+];
+
+/* edges: [graph, from, fromPinName, to, toPinName] */
+const E = [
+ ["frame","ev","▶","val","▶"],["frame","ev","scene","val","scene"],["frame","val","▶","clr","▶"],["frame","clr","▶","xf","▶"],["frame","ev","scene","xf","scene"],
+ ["frame","xf","▶","cl","▶"],["frame","xf","tri","cl","tri"],["frame","cl","▶","pr","▶"],["frame","cl","tris","pr","tri"],["frame","xf","normal_m","pr","normal_m"],
+ ["frame","pr","▶","br","▶"],["frame","br","Sequential","sq","▶"],["frame","br","TiledParallel","tl","▶"],["frame","pr","prepared","sq","prepared"],["frame","pr","prepared","tl","prepared[]"],
+ ["frame","sq","▶","ret","▶"],["frame","tl","▶","ret","▶"],
+ ["xform","gp","P","vp","P"],["xform","gv","V","vp","V"],["xform","vp","VP","mvp","VP"],["xform","gm","M","mvp","M"],["xform","gm","M","gn","M"],["xform","gn","N","td","N"],
+ ["xform","mvp","MVP","vt","MVP"],["xform","gm","M","vt","M"],["xform","td","n_world","vt","n_world"],
+ ["clip","cd","d","ct","d"],["clip","ip","v","ct","split"],["clip","ct","▶","pt","▶"],["clip","ct","tris","pt","tris"],["clip","ct","tris","pd","clip_pos"],
+ ["clip","pd","screen","ef","a"],["clip","pd","screen","bb","screen×3"],["clip","pd","screen","tlf","edges"],["clip","ef","area","wd","area"],
+ ["clip","pd","screen","pt","screen"],["clip","pd","inv_w","pt","inv_w"],["clip","wd","area>0","pt","area>0"],["clip","bb","min/max","pt","min/max"],["clip","tlf","top_left","pt","top_left"],
+ ["raster","re","▶","lp","▶"],["raster","lp","循环体","ps","▶"],["raster","lp","sample","e3","sample"],["raster","re","verts","e3","verts"],["raster","e3","e0..e2","ps","e0..e2"],["raster","e3","e0..e2","bc","e0..e2"],
+ ["raster","ps","在内部","zt","▶"],["raster","bc","λ","dz","λ"],["raster","dz","depth","zt","depth"],["raster","zt","通过","sh","▶"],["raster","bc","λ","pc","λ"],["raster","bc","λ","at","λ"],
+ ["raster","pc","uv","sh","uv"],["raster","at","frag_pos","sh","frag_pos"],["raster","at","normal","sh","normal"],["raster","sh","▶","wr","▶"],["raster","sh","color","wr","color"],["raster","dz","depth","wr","depth"],
+ ["shade","sd","srgb","sl","srgb"],["shade","sl","linear","ab","linear"],["shade","em","否","lt","▶"],["shade","nm","n_obj","tw","n_obj"],["shade","tw","normal","lt","normal"],["shade","ab","albedo","lt","albedo"],["shade","ss","shininess","lt","shininess"],["shade","lt","linear_color","tb","linear_color"],
+ ["tiles","bn","▶","pf","▶"],["tiles","bn","bins","lb","tile_index"],["tiles","lb","tile_rect","rt","tile_rect"],["tiles","lb","bin","rt","bin"],["tiles","pf","▶","rj","▶"],["tiles","wl","▶","rj","▶"],["tiles","rj","▶","rt","▶"],["tiles","rj","▶","bar","▶"]
+];
+
+/* ===================== 其他模块 ===================== */
+GRAPHS.forEach(g=>{g.mod="raster"; if(g.id==="frame") g.parent="repo";});
+GRAPHS.unshift({id:"repo",mod:"overview",lvl:"L0",name:"仓库总览",parent:null,
+ intro:`<p>TinyRender 是一个纯 CPU 渲染器，三条渲染路径（光栅化、Whitted 光追、路径追踪）共享同一套场景、三角形、材质、图像和线程池。这张图是整个仓库的模块地图，每个模块节点都可以双击进入。</p><p>建议阅读顺序：光栅化 → BVH 与求交 → 光追积分器 → SDF → 参与介质 → 网格转 SDF。后面的模块依赖前面的。</p>`});
+GRAPHS.push(
+ {id:"bvhbuild",mod:"bvh",lvl:"L1",name:"BVH 构建",parent:"repo",intro:`<p>把场景展平成世界空间三角形，再自顶向下递归构建二叉 BVH。每个内部节点要么用分桶 SAH 选划分面，要么退回中位数划分。参考机器上，16 桶 SAH 相比中位数划分让 Whitted 场景的三角形测试减少 88.3%，单线程光追内核快 3.78 倍。</p>`},
+ {id:"bvhtrav",mod:"bvh",lvl:"L1",name:"遍历与求交",parent:"repo",intro:`<p>用显式栈做前序遍历：先测 AABB（slab 方法），叶子里测三角形（Möller–Trumbore），内部节点把近的子节点后压栈先访问，命中后用最近距离剪枝。阴影线走单独的 any-hit 版本，找到任何遮挡就返回。</p>`},
+ {id:"rframe",mod:"integ",lvl:"L1",name:"光追一帧",parent:"repo",intro:`<p><code>RayRenderer::renderScene</code>：校验场景 → 每帧重建 BVH 和面光源表 → 按 tile 并行，每个像素每个样本独立播种 RNG → Whitted 或路径追踪 → 线性 HDR 累加 → ACES 色调映射。多线程和单线程输出逐位一致。</p>`},
+ {id:"whitted",mod:"integ",lvl:"L2",name:"Whitted 光追",parent:"rframe",intro:`<p>经典 Whitted 风格递归：漫反射只算直接光照，金属递归反射，玻璃同时递归反射和折射并用 Fresnel 加权。面光源用 4 个固定分层样本，所以有软阴影但没有噪点。参考机器 20 线程加速 11.44 倍。</p>`},
+ {id:"path",mod:"integ",lvl:"L2",name:"路径追踪",parent:"rframe",intro:`<p>迭代式（非递归）蒙特卡洛路径追踪：漫反射面做 NEE（下一事件估计）加余弦加权采样，金属和玻璃随机选一个方向，深度 ≥ 3 后俄罗斯轮盘赌。固定种子下 1 线程和 N 线程结果逐位一致，20 线程加速 10.17 倍。</p>`},
+ {id:"sdfeval",mod:"sdf",lvl:"L1",name:"距离场与 CSG",parent:"repo",intro:`<p>SDF 用一棵不可变的表达式树表示：叶子是解析基本体或采样网格，内部节点是并、交、差、平滑并。每个节点同时维护保守包围盒和 Lipschitz 上界，供 sphere tracing 安全步进使用。</p>`},
+ {id:"sphere",mod:"sdf",lvl:"L1",name:"Sphere Tracing",parent:"repo",intro:`<p><code>intersectSdfObject</code>：先用包围盒裁剪光线区间，再按 |d|/L 步进；进入容差带后用中心差分求法线并做一步牛顿精修。多个 SDF 物体取最近，最后与三角形 BVH 的结果比较。</p>`},
+ {id:"volpath",mod:"vol",lvl:"L1",name:"体积路径追踪",parent:"repo",intro:`<p>均匀介质用轴对齐盒子表示。每段光线先收集经过的介质区间，采样一个单位速率的光学深度，逐区间扣减，落在某个区间里就发生散射事件，否则继续走表面分支。介质事件处做 NEE，阴影线乘 Beer–Lambert 透射率。</p>`},
+ {id:"meshsdf",mod:"mesh",lvl:"L1",name:"网格转 SDF",parent:"repo",intro:`<p>把斯坦福兔子烘焙成符号距离场：先检查拓扑并补洞，变成闭合流形；然后对每个网格节点用 BVH 求最近点得到无符号距离，再沿三个方向数穿越次数做奇偶投票定符号；最后截断并压成稀疏 brick。</p>`}
+);
+const MODS=[["overview","仓库总览"],["raster","光栅化"],["bvh","BVH 与求交"],["integ","光追积分器"],["sdf","SDF"],["vol","参与介质"],["mesh","网格转 SDF"]];
+
+/* ===== repo ===== */
+node({id:"r_main",g:"repo",x:40,y:40,w:200,k:"event",t:"main.cpp",s:"光栅化入口",outs:["▶:exec"],
+ info:{loc:"main.cpp#L1",sig:"tinyrender.exe [model prefix]",what:`<p>加载模型（OBJ + diffuse/normal/spec 贴图），搭场景，创建 <code>Render</code>，调用 <code>renderScene</code>，写出 2048×2048 的 TGA。</p>`,code:"",why:"",qa:[]}});
+node({id:"r_ray",g:"repo",x:40,y:300,w:200,k:"event",t:"ray_main.cpp",s:"RT / PT 入口",outs:["▶:exec"],
+ info:{loc:"ray_main.cpp#L1",sig:"tinyrender_ray.exe --integrator whitted|path --scene ...",what:`<p>命令行解析积分器、场景预设、分辨率、spp、深度、线程数、tile 大小、BVH 策略、SDF 步数等参数，然后渲染并打印分阶段计时和各类计数器（BVH 访问、SDF 步数、光线数、无效样本、RGB 校验和）。</p>`,code:"",
+ why:`<p>场景预设是按「测试职责」划分的：每个预设只负责验证一件事（漫反射间接光、金属玻璃、SAH 正确性、SDF 基本体、CSG、体积吸收……），这样出错时能快速定位是哪一层的问题。</p>`,qa:[]}});
+node({id:"r_scene",g:"repo",x:300,y:150,w:230,k:"pure",t:"Scene / 资产",s:"model.cpp · ReferenceScene.cpp",outs:["scene:struct"],
+ info:{loc:"model.cpp#L160",sig:"class Scene { models; sdf_objects; media; lights; Camera& camera; }",
+ what:`<p><code>Scene</code> 把三角形模型、SDF 物体、均匀介质、点光源和相机放在一起，三条渲染路径共用。模型加载支持 OBJ（含负索引、多边形扇形三角化）和 ASCII PLY；参考场景包括 Cornell 实测几何和斯坦福兔子（下载时校验哈希）。</p>`,code:"",why:"",qa:[]}});
+node({id:"r_pool",g:"repo",x:300,y:420,w:230,k:"par",t:"WorkerPool",s:"常驻线程池 · 三处共用",outs:["pool:Fn"],drill:"tiles",
+ info:{loc:"WorkerPool.cpp#L42",sig:"void WorkerPool::parallelFor(std::size_t job_count, const std::function<void(std::size_t)>& job)",
+ what:`<p>光栅化 tile、光追 tile、网格 SDF 烘焙的 z 切片都用同一个线程池。详细拆解在光栅化模块的「Tile 并行」子图里。</p>`,code:"",why:"",qa:[]}});
+node({id:"r_rast",g:"repo",x:640,y:40,w:230,k:"macro",t:"光栅化管线",s:"render.cpp",ins:["▶:exec","scene:struct","pool:Fn"],outs:["image:Color"],drill:"frame",
+ info:{loc:"render.cpp#L311",sig:"RenderProfile Render::renderScene(const Scene&)",what:`<p>变换 → 齐次裁剪 → 三角形准备 → 边函数光栅化 → Blinn-Phong。tile 并行 10.1 倍加速且与顺序版本逐位一致。</p>`,code:"",why:"",qa:[]}});
+node({id:"r_mesh",g:"repo",x:300,y:600,w:230,k:"macro",t:"网格转 SDF",s:"MeshProcessing · MeshDistanceField",ins:["scene:struct"],outs:["grid:struct"],drill:"meshsdf",
+ info:{loc:"MeshDistanceField.cpp#L125",sig:"MeshSdfBakeResult bakeMeshSignedDistanceField(const std::vector<WorldTriangle>&, const MeshSdfBakeOptions&)",what:`<p>补洞、闭合性检查、最近点距离、奇偶投票定符号、稀疏截断。</p>`,code:"",why:"",qa:[]}});
+node({id:"r_sdf",g:"repo",x:640,y:470,w:230,k:"macro",t:"SDF 隐式几何",s:"SDF.cpp",ins:["grid:struct"],outs:["sdf:struct"],drill:"sdfeval",
+ info:{loc:"SDF.cpp#L523",sig:"float SDFShape::Node::evaluate(const Vector3f&, std::uint64_t*) const",what:`<p>解析基本体、CSG 树、平滑并、稠密和稀疏采样网格。</p>`,code:"",why:"",qa:[]}});
+node({id:"r_geom",g:"repo",x:640,y:260,w:230,k:"macro",t:"BVH 与求交",s:"RayGeometry.cpp",ins:["scene:struct","sdf:struct"],outs:["geometry:struct"],drill:"bvhbuild",
+ info:{loc:"RayGeometry.cpp#L687",sig:"class RaySceneGeometry { BVH bvh_; std::vector<SDFObject> sdf_objects_; }",what:`<p>三角形走 SAH BVH，SDF 走 sphere tracing，两者在同一个最近命中接口里合并。</p>`,code:"",why:"",qa:[]}});
+node({id:"r_vol",g:"repo",x:640,y:650,w:230,k:"macro",t:"参与介质",s:"Volume.cpp",outs:["media:struct"],drill:"volpath",
+ info:{loc:"Volume.cpp#L103",sig:"struct HomogeneousMedium { minimum; maximum; sigma_a; sigma_s; }",what:`<p>轴对齐盒子里的均匀介质，支持吸收和各向同性散射。</p>`,code:"",why:"",qa:[]}});
+node({id:"r_integ",g:"repo",x:960,y:260,w:240,k:"macro",t:"光追积分器",s:"RayRenderer.cpp",ins:["▶:exec","geometry:struct","media:struct","pool:Fn"],outs:["image:Color"],drill:"rframe",
+ info:{loc:"RayRenderer.cpp#L1293",sig:"RayRenderProfile RayRenderer::renderScene(const Scene&)",what:`<p>Whitted 光追和路径追踪（含体积），确定性 RNG，ACES 色调映射。</p>`,code:"",why:"",qa:[]}});
+node({id:"r_bench",g:"repo",x:1290,y:150,w:250,k:"func",t:"Benchmark 与测试",s:"A/B 交替 · 逐位比较",ins:["raster:Color","ray:Color"],outs:[],
+ info:{loc:"benchmark.cpp#L1",sig:"tinyrender_benchmark / tinyrender_ray_benchmark / tinyrender_mesh_sdf_benchmark + ctest",
+ what:`<p>三个 benchmark 程序都是严格的 A/B 实验：一次只改变一个变量（顺序/并行、线程数、中位数/SAH、BVH/稠密 SDF/稀疏 SDF），A→B 和 B→A 交替各半，记录中位数和 P95，并且每对样本后比较 HDR 浮点位模式和 RGB 字节是否完全相同。测试约 6000 行，覆盖数学、裁剪、填充规则、求交、SDF、介质的解析解和多线程确定性。</p>`,code:"",
+ why:`<p>"性能变了但结果没变"是性能优化可信的前提。这个项目的所有加速数字都附带逐位一致的证明，这一点面试时值得强调。</p>`,
+ qa:[["为什么 benchmark 要 A→B 和 B→A 交替？","消除顺序偏差：CPU 频率爬升、缓存预热、热降频都和时间有关。如果总是先跑 A 再跑 B，系统状态的漂移会被错误地算到某一方头上。交替并各占一半，可以让这些漂移在两边平均掉。"],
+ ["为什么报中位数和 P95，而不是平均值？","帧时间分布通常有长尾（系统调度、页错误），平均值会被少数离群值拉高。中位数反映典型表现，P95 反映稳定性，两个一起看更全面。"]]}});
+E.push(
+ ["repo","r_main","▶","r_rast","▶"],["repo","r_ray","▶","r_integ","▶"],["repo","r_scene","scene","r_rast","scene"],["repo","r_scene","scene","r_geom","scene"],["repo","r_scene","scene","r_mesh","scene"],
+ ["repo","r_pool","pool","r_rast","pool"],["repo","r_pool","pool","r_integ","pool"],["repo","r_mesh","grid","r_sdf","grid"],["repo","r_sdf","sdf","r_geom","sdf"],
+ ["repo","r_geom","geometry","r_integ","geometry"],["repo","r_vol","media","r_integ","media"],["repo","r_rast","image","r_bench","raster"],["repo","r_integ","image","r_bench","ray"]);
+
+/* ===== bvhbuild ===== */
+node({id:"b_flat",g:"bvhbuild",x:40,y:120,w:240,k:"func",t:"flattenSceneTriangles",s:"展平到世界空间",ins:["▶:exec","scene:struct"],outs:["▶:exec","tris:WorldTriangle[]:struct"],
+ info:{loc:"RayGeometry.cpp#L147",sig:"std::vector<WorldTriangle> flattenSceneTriangles(const Scene& scene)",
+ what:`<p>对每个模型算模型矩阵和逆转置法线矩阵（和光栅化同一套变换），把所有面变成世界空间的 <code>WorldTriangle</code>：三个顶点、法线、UV、几何法线，以及指回原始 <code>Triangle</code> 的指针（用于取材质和贴图）。</p>`,code:"",
+ why:`<p>光追需要在任意方向上查询几何，所以一次性把场景变成不可变的世界空间快照。之后所有查询都是 const 的，多个工作线程可以无锁共享。</p>`,
+ qa:[["为什么不在物体空间做求交（实例化）？","物体空间求交可以让同一个网格的多个实例共享一棵 BVH（两级 BVH：TLAS + BLAS），省内存，动态物体只需更新顶层。这里场景小且静态，展平成一棵树最简单；如果要支持实例化或动画，就该改成两级结构。"]]}});
+node({id:"b_reb",g:"bvhbuild",x:340,y:120,w:240,k:"func",t:"BVH::rebuild",s:"分出射线 BVH 与距离 BVH",ins:["▶:exec","tris:WorldTriangle[]:struct"],outs:["▶:exec","indices:int[]:int"],
+ info:{loc:"RayGeometry.cpp#L687",sig:"void BVH::rebuild(std::vector<WorldTriangle> primitives)",
+ what:`<p>刷新每个三角形的派生数据（几何法线），合法三角形进 <code>primitive_indices_</code>；退化但坐标有限的三角形进另一棵「距离 BVH」，它们对光线不可见，但网格转 SDF 的最近点查询需要它们。节点数组预留 2N−1 个。</p>`,
+ code:`nodes_.reserve(primitive_indices_.size() * 2 - 1);
+buildNode(0, primitive_indices_.size(), 0);`,
+ why:`<p>N 个叶子的满二叉树恰好有 2N−1 个节点，预留后递归过程中不会重新分配，节点用数组下标互相引用，内存连续、对缓存友好。</p>`,qa:[]}});
+node({id:"b_bnd",g:"bvhbuild",x:640,y:330,w:240,k:"pure",t:"包围盒 + 质心包围盒",s:"buildNode 开头",ins:["indices:int[]:int"],outs:["bounds:struct","centroid_bounds:struct"],
+ info:{loc:"RayGeometry.cpp#L866",sig:"bounds.expand(primitive.bounds()); centroid_bounds.expand(primitive.centroid());",
+ what:`<p>同时算两个盒子：所有三角形的包围盒（存进节点，用于求交）和所有三角形质心的包围盒（用于选择划分轴和分桶）。</p>`,code:"",
+ why:`<p>划分依据是质心而不是三角形本身，因为每个三角形必须整体归到一边。用质心包围盒分桶，桶宽只取决于质心的分布，不会被一个特别大的三角形撑开。</p>`,qa:[]}});
+node({id:"b_node",g:"bvhbuild",x:640,y:120,w:240,k:"func",t:"buildNode",s:"递归 · 深度 > 30 只用中位数",ins:["▶:exec","first/count:int","depth:int"],outs:["▶:exec","count:int"],
+ info:{loc:"RayGeometry.cpp#L854",sig:"std::uint32_t BVH::buildNode(std::uint32_t first, std::uint32_t count, std::size_t depth)",
+ what:`<p>为 [first, first+count) 这段三角形建一个节点。数量 ≤ leaf_size（默认 4）就成为叶子；否则选 SAH 划分，SAH 失败（所有质心重合、划分一边为空）或深度超过 30 时退回中位数划分，然后递归左右。</p>`,
+ code:`if (count <= options_.leaf_size) { /* 叶子 */ return node_index; }
+const int axis = centroid_bounds.longestAxis();
+if (strategy == BinnedSAH && depth < 30) {
+    Split split = findSahSplit(first, count, bounds, centroid_bounds);
+    if (split.valid()) middle = partitionSah(first, count, centroid_bounds, split);
+}
+if (middle == first || middle == first + count)
+    middle = partitionMedian(first, count, axis);`,
+ why:`<p>深度限制是为了保证遍历时固定大小的栈不会溢出：SAH 可能建出很不平衡的树，30 层后强制用中位数划分，就能保证 32 位下标的树深度小于 64。</p>`,
+ qa:[["SAH 为什么可能失败？失败了怎么办？","所有质心在每个轴上都重合（比如很多三角形共享同一个质心）时无法分桶；或者最优划分把所有三角形都放在一边。这两种情况都会退回中位数划分，保证每次递归都能把数量减半，避免无限递归。"]]}});
+node({id:"b_leaf",g:"bvhbuild",x:960,y:40,w:210,k:"branch",t:"count ≤ leaf_size?",s:"默认 4",ins:["▶:exec","count:int"],outs:["叶子:exec","划分:exec"],
+ info:{loc:"RayGeometry.cpp#L874",sig:"if (count <= options_.leaf_size) { ... }",what:`<p>叶子大小是固定阈值，可以通过命令行 <code>--bvh-leaf-size</code> 调整。</p>`,code:"",
+ why:`<p>完整的 SAH 构建还会比较「把当前节点直接做成叶子」的代价（≈ 三角形数 × 求交代价）和最优划分代价，划分不划算就停。这里没有做这个比较，只按数量终止。</p>`,
+ qa:[["叶子大小怎么权衡？","叶子越小，树越深，遍历的 AABB 测试越多但三角形测试越少；叶子越大则相反。最优值取决于 AABB 测试和三角形测试的相对代价。SIMD 实现（比如一次测 4 个三角形）通常让叶子大小和 SIMD 宽度对齐。"]]}});
+node({id:"b_sah",g:"bvhbuild",x:960,y:250,w:240,k:"pure",t:"findSahSplit",s:"3 轴 × 16 桶 · 前后缀扫描",ins:["bounds:struct","centroid_bounds:struct"],outs:["split:struct"],
+ info:{loc:"RayGeometry.cpp#L749",sig:"BVH::Split BVH::findSahSplit(std::uint32_t first, std::uint32_t count, const AABB& bounds, const AABB& centroid_bounds) const",
+ what:`<p>对每个轴：按质心把三角形分进 16 个桶，记录每个桶的包围盒和数量；从右往左扫一遍得到后缀包围盒和数量，再从左往右扫一遍，对 15 个候选划分面计算代价，取全局最小。</p>`,
+ code:`for (split = 0; split + 1 < bin_count; ++split) {
+    left_count += bins[split].count;
+    left_bounds.expand(bins[split].bounds);
+    cost = 1.0 + (SA(left) * left_count + SA(right[split+1]) * right_count)
+                 / parent_area;
+    if (cost < best.cost) best = {axis, split, cost};
+}`,
+ formula:"C = C_trav + ( SA(L)·N_L + SA(R)·N_R ) / SA(P) · C_isect，这里 C_trav = C_isect = 1",
+ why:`<p>前后缀扫描让每个轴的代价是 O(N + B) 而不是 O(N·B)。分桶是对「尝试每个三角形位置作为划分面」的近似，精度损失很小，构建快得多。</p>`,
+ qa:[["SAH 的代价公式是怎么来的？","假设光线在空间中均匀分布，一条已经穿过父节点的光线再穿过子节点的条件概率约等于两者表面积之比 SA(子)/SA(父)。所以期望代价 = 遍历当前节点的代价 + 进入左子的概率 × 左边的求交代价 + 进入右子的概率 × 右边的求交代价。它是一个贪心的局部估计，假设子节点都是叶子。"],
+ ["为什么 SAH 比中位数划分好这么多？","中位数只保证数量平衡，不管空间分布。比如 Cornell 场景里墙壁是几个大三角形、物体是很多小三角形，中位数划分会切出大量互相重叠、包围盒很大的节点；SAH 倾向于把空旷的空间切出去，让光线能尽早剔除。实测三角形测试减少 88.3%。"],
+ ["SAH 构建更慢，什么时候不划算？","兔子场景里 SAH 构建约慢 3.6 倍，但每帧重建的整帧仍然快 1.317 倍，因为渲染时间远大于构建时间。如果是每帧光线很少、几何频繁变化的场景（比如动态物体），就要权衡：常用折中是 LBVH（Morton 码排序，GPU 上极快）加局部优化，或者只对静态部分用 SAH。"]]}});
+node({id:"b_psah",g:"bvhbuild",x:1270,y:180,w:230,k:"func",t:"partitionSah",s:"两遍稳定划分",ins:["▶:exec","split:struct"],outs:["▶:exec","middle:int"],
+ info:{loc:"RayGeometry.cpp#L817",sig:"std::uint32_t BVH::partitionSah(std::uint32_t first, std::uint32_t count, const AABB& centroid_bounds, const Split& split)",
+ what:`<p>第一遍把桶号 ≤ split.bin 的写到 scratch 左边，第二遍把其余的写到右边，再整体拷回。返回左右分界点。</p>`,code:"",
+ why:`<p>用临时缓冲区做两遍划分是<b>稳定</b>的，保持三角形原有的相对顺序，配合求交时的平局规则，结果完全确定。<code>std::partition</code> 不稳定，会打乱顺序。</p>`,qa:[]}});
+node({id:"b_med",g:"bvhbuild",x:1270,y:390,w:230,k:"pure",t:"partitionMedian",s:"nth_element · O(n)",ins:["axis:int"],outs:["middle:int"],
+ info:{loc:"RayGeometry.cpp#L733",sig:"std::uint32_t BVH::partitionMedian(std::uint32_t first, std::uint32_t count, int axis)",
+ what:`<p>在质心包围盒最长轴上用 <code>std::nth_element</code> 找中位数，质心相同时按下标比较。</p>`,code:"",
+ why:`<p><code>nth_element</code> 平均 O(n)，比完整排序 O(n log n) 快，而这里只需要「左半都不大于右半」。按下标打破平局保证结果和标准库实现无关。</p>`,qa:[]}});
+node({id:"b_rec",g:"bvhbuild",x:1570,y:250,w:220,k:"macro",t:"buildNode × 2",s:"递归左右子树",ins:["▶:exec","middle:int"],outs:["left/right:int"],
+ info:{loc:"RayGeometry.cpp#L896",sig:"left_child = buildNode(first, left_count, depth + 1); right_child = buildNode(middle, ...);",what:`<p>递归构建，子节点下标写回父节点。</p>`,code:"",why:"",
+ qa:[["递归构建可以并行吗？","可以。左右子树互不依赖，上层节点切分后可以把两个子树交给不同线程（任务并行），下层子树足够小时再串行。难点是节点数组的分配要无锁，比如每个任务预分配自己的节点区间。"]]}});
+E.push(["bvhbuild","b_flat","▶","b_reb","▶"],["bvhbuild","b_flat","tris","b_reb","tris"],["bvhbuild","b_reb","▶","b_node","▶"],["bvhbuild","b_reb","indices","b_bnd","indices"],
+ ["bvhbuild","b_node","▶","b_leaf","▶"],["bvhbuild","b_node","count","b_leaf","count"],["bvhbuild","b_bnd","bounds","b_sah","bounds"],["bvhbuild","b_bnd","centroid_bounds","b_sah","centroid_bounds"],
+ ["bvhbuild","b_leaf","划分","b_psah","▶"],["bvhbuild","b_sah","split","b_psah","split"],["bvhbuild","b_psah","▶","b_rec","▶"],["bvhbuild","b_psah","middle","b_rec","middle"],["bvhbuild","b_med","middle","b_rec","middle"]);
+COMMENTS.push({g:"bvhbuild",x:620,y:0,w:1190,h:500,t:"buildNode 内部：每个节点执行一次"});
+
+/* ===== bvhtrav ===== */
+node({id:"t_ray",g:"bvhtrav",x:40,y:140,w:200,k:"event",t:"BVH::intersect",s:"最近命中查询",outs:["▶:exec","ray:struct"],
+ info:{loc:"RayGeometry.cpp#L973",sig:"bool BVH::intersect(const Ray& ray, float t_min, float t_max, HitRecord& hit, BVHTraversalStats* stats) const",
+ what:`<p>输入光线和参数区间 [t_min, t_max]，输出最近的三角形命中。可选地统计节点访问、AABB 测试和三角形测试次数，benchmark 用这些计数来解释加速的来源。</p>`,code:"",why:"",qa:[]}});
+node({id:"t_root",g:"bvhtrav",x:300,y:140,w:210,k:"func",t:"根节点 AABB 测试",s:"不中直接返回",ins:["▶:exec","ray:struct"],outs:["▶:exec","entry:float"],
+ info:{loc:"RayGeometry.cpp#L995",sig:"if (!nodes_[0].bounds.intersect(ray, t_min, t_max, &root_entry)) return false;",what:`<p>根节点不中，整个场景都不中。命中则把根节点和它的进入距离压栈。</p>`,code:"",why:"",qa:[]}});
+node({id:"t_loop",g:"bvhtrav",x:570,y:120,w:230,k:"macro",t:"显式栈循环",s:"进入距离 > closest 则剪枝",ins:["▶:exec","entry:float"],outs:["节点:exec","node:struct"],
+ info:{loc:"RayGeometry.cpp#L1002",sig:"while (stack_size != 0) { traversal = stack[--stack_size]; if (traversal.entry_distance > closest) continue; ... }",
+ what:`<p>用固定容量的数组做栈，栈里同时存节点下标和它的进入距离。弹出时如果进入距离已经比当前最近命中还远，整棵子树都可以跳过。</p>`,code:"",
+ why:`<p>不用递归：避免函数调用开销和不可控的栈深度。栈满时抛异常而不是越界写，这是「防御性」的写法，构建时的深度限制保证正常情况下不会触发。</p>`,
+ qa:[["为什么要把进入距离一起存进栈？","压栈时我们已经算过子节点的进入距离，但那时 closest 可能还很大。等到弹出时，可能已经找到了更近的命中，这时直接比较存好的进入距离就能剪枝，不用重新做 AABB 测试。"]]}});
+node({id:"t_slab",g:"bvhtrav",x:570,y:360,w:230,k:"pure",t:"AABB::intersect",s:"slab 方法 · double 计算",ins:["ray:struct","bounds:struct"],outs:["hit:bool","t_enter:float"],
+ info:{loc:"RayGeometry.cpp#L517",sig:"bool AABB::intersect(const Ray& ray, float t_min, float t_max, float* t_enter, float* t_exit) const",
+ what:`<p>对三个轴分别算光线进入和离开两个平面的参数，取所有「进入」的最大值和所有「离开」的最小值，进入 ≤ 离开就相交。方向分量为 0 时直接判断原点是否在两平面之间。</p>`,
+ code:`for (int axis = 0; axis < 3; ++axis) {
+    if (direction == 0.0f) { if (origin outside slab) return false; continue; }
+    near = (minimum[axis] - origin) / direction;
+    far  = (maximum[axis] - origin) / direction;
+    if (near > far) std::swap(near, far);
+    entry = max(entry, near);  exit = min(exit, far);
+    if (entry > exit) return false;
+}`,
+ formula:"t_enter = max_i min(t_i⁰, t_i¹)，t_exit = min_i max(t_i⁰, t_i¹)",
+ why:`<p>AABB 是三对平行平面（slab）的交集，光线在盒子里的部分就是在三个 slab 里的参数区间的交集。用 double 计算是为了数值稳健，但每次都做除法。</p>`,
+ qa:[["这个 slab 实现还能怎么优化？","1）预先算好 1/direction，把除法变乘法；2）预先存好每个轴的方向符号，直接选近平面和远平面，省掉 swap；3）SIMD 一次测 4 个或 8 个盒子（宽 BVH）。另外 IEEE 浮点里 1/0 = ∞，配合 min/max 本来就能处理方向分量为 0 的情况，不需要特判，但要小心 0×∞ 产生 NaN。"]]}});
+node({id:"t_leaf",g:"bvhtrav",x:870,y:120,w:200,k:"branch",t:"isLeaf?",s:"primitive_count != 0",ins:["▶:exec"],outs:["叶子:exec","内部:exec"],
+ info:{loc:"RayGeometry.cpp#L1007",sig:"if (node.isLeaf()) { ... } else { ... }",what:`<p>叶子测三角形，内部节点测两个子节点。</p>`,code:"",why:"",qa:[]}});
+node({id:"t_tri",g:"bvhtrav",x:1140,y:20,w:250,k:"pure",t:"intersectTriangle",s:"Möller–Trumbore · 双面",ins:["ray:struct","triangle:struct"],outs:["t:float","bary:Vec3"],
+ info:{loc:"RayGeometry.cpp#L582",sig:"bool intersectTriangle(const WorldTriangle& triangle, const Ray& ray, float t_min, float t_max, HitRecord& hit)",
+ what:`<p>不先求平面交点，直接解出重心坐标 (u, v) 和距离 t。行列式接近 0 表示光线和三角形平行。命中后插值着色法线和 UV，着色法线如果和几何法线反向就翻转；<code>front_face</code> 由光线方向和几何法线的点积符号决定。</p>`,
+ code:`p   = dir × e2;   det = e1 · p;          // |det| 小 → 平行
+s   = origin - v0;  u = (s · p) / det;     // u ∈ [0,1]
+q   = s × e1;       v = (dir · q) / det;   // v ≥ 0, u+v ≤ 1
+t   = (e2 · q) / det;`,
+ formula:"O + tD = (1-u-v)V₀ + uV₁ + vV₂  →  [-D, E₁, E₂]·[t,u,v]ᵀ = O - V₀",
+ why:`<p>把三角形上的点用重心坐标表示，和光线方程联立得到一个 3×3 线性方程组，用克莱姆法则求解；混合积可以用叉积和点积表示，共享中间量 p、q，非常省计算。用 |det| 而不是 det 判断，所以背面也能命中（双面）。</p>`,
+ qa:[["推导一下 Möller–Trumbore？","联立 O + tD = V₀ + u·E₁ + v·E₂，整理成 -tD + uE₁ + vE₂ = S（S = O − V₀）。克莱姆法则：det = (D × E₂)·E₁，u = (D × E₂)·S / det，v = (S × E₁)·D / det，t = (S × E₁)·E₂ / det。先判断 u 再算 v、t，可以尽早退出。"],
+ ["为什么要做双面求交？","Cornell 场景的墙壁、玻璃这类薄片或折射体，光线可能从背面打进来；折射时光线也要能从物体内部击中表面。front_face 告诉着色代码当前是从外面还是里面打中的，用来决定折射率比。"]]}});
+node({id:"t_best",g:"bvhtrav",x:1450,y:20,w:230,k:"func",t:"更新最近命中",s:"平局按 primitive_index",ins:["t:float"],outs:["closest:float"],
+ info:{loc:"RayGeometry.cpp#L1015",sig:"wins_tie = candidate.t == closest && candidate.primitive_index < closest_hit.primitive_index;",
+ what:`<p>更近就替换；距离完全相等时，下标小的胜出。之后的三角形测试用新的 closest 作为 t_max。</p>`,code:"",
+ why:`<p>这个平局规则让命中结果与遍历顺序无关，所以中位数 BVH 和 SAH BVH（树结构完全不同）的渲染结果能做到逐位一致。benchmark 正是靠这一点证明 SAH 只改变了速度，没改变结果。</p>`,
+ qa:[["两个三角形 t 完全相等的情况真的会发生吗？","会。共享边、共享顶点处，或者重叠的共面三角形（比如地板和一个贴在地上的面片），浮点计算出的 t 可能完全相同。没有确定的平局规则，不同的树会选出不同的三角形，导致法线或材质不同，图像就不一致。"]]}});
+node({id:"t_ord",g:"bvhtrav",x:1140,y:300,w:250,k:"func",t:"近子节点后压栈",s:"前到后遍历",ins:["▶:exec","t_enter×2:float"],outs:["▶:exec"],
+ info:{loc:"RayGeometry.cpp#L1035",sig:"push(far child); push(near child);  // 近的先弹出",
+ what:`<p>两个子节点都命中时，先压远的、再压近的，所以近的先被访问；只命中一个就只压一个。</p>`,code:"",
+ why:`<p>先访问近的子树，更有可能早早找到近处的命中，把 closest 缩小，远的子树弹出时就能直接被剪掉。这是最近命中查询性能的关键之一。</p>`,qa:[]}});
+node({id:"t_occ",g:"bvhtrav",x:870,y:470,w:230,k:"func",t:"BVH::occluded",s:"any-hit · 命中即返回",ins:["ray:struct"],outs:["blocked:bool"],
+ info:{loc:"RayGeometry.cpp#L1050",sig:"bool BVH::occluded(const Ray& ray, float t_min, float t_max, BVHTraversalStats* stats) const",
+ what:`<p>阴影线专用：只关心区间内有没有任何遮挡，找到第一个命中就返回 true，不需要最近，也不需要填 HitRecord。</p>`,code:"",
+ why:`<p>阴影线数量通常和主光线一样多甚至更多（每个点光源一条、面光源每个样本一条），any-hit 能省掉大量遍历。</p>`,
+ qa:[["any-hit 遍历还有什么可以优化？","子节点访问顺序可以用启发式（比如先访问更大的子树，更可能遮挡）；GPU 光追 API 里也有专门的 accept-first-hit 标志。注意 SDF 部分的 occluded 这里是用完整的 intersectSdf 实现的，没有提前退出，有优化空间。"]]}});
+node({id:"t_scene",g:"bvhtrav",x:1450,y:300,w:250,k:"func",t:"RaySceneGeometry::intersect",s:"三角形与 SDF 取近",ins:["closest:float"],outs:["hit:HitRecord:struct"],drill:"sphere",
+ info:{loc:"RayGeometry.cpp#L1682",sig:"bool RaySceneGeometry::intersect(const Ray&, float t_min, float t_max, HitRecord& hit, ...) const",
+ what:`<p>先查三角形 BVH，再用三角形的 t 作为上限去 sphere trace 所有 SDF 物体。SDF 必须比三角形近出一个容差才算胜出，否则三角形赢。</p>`,code:"",
+ why:`<p>先查 BVH 拿到一个上限，SDF 的步进区间就被截短了，省掉很多步。三角形赢平局是为了保持加入 SDF 之前的历史输出不变。</p>`,qa:[]}});
+E.push(["bvhtrav","t_ray","▶","t_root","▶"],["bvhtrav","t_ray","ray","t_root","ray"],["bvhtrav","t_root","▶","t_loop","▶"],["bvhtrav","t_root","entry","t_loop","entry"],
+ ["bvhtrav","t_loop","节点","t_leaf","▶"],["bvhtrav","t_loop","node","t_slab","bounds"],["bvhtrav","t_ray","ray","t_slab","ray"],["bvhtrav","t_ray","ray","t_tri","ray"],["bvhtrav","t_tri","t","t_best","t"],
+ ["bvhtrav","t_leaf","内部","t_ord","▶"],["bvhtrav","t_slab","t_enter","t_ord","t_enter×2"],["bvhtrav","t_best","closest","t_scene","closest"],["bvhtrav","t_ray","ray","t_occ","ray"]);
+
+/* ===== rframe ===== */
+node({id:"p_ent",g:"rframe",x:40,y:150,w:230,k:"event",t:"RayRenderer::renderScene",s:"光追每帧入口",outs:["▶:exec","scene:struct"],
+ info:{loc:"RayRenderer.cpp#L1293",sig:"RayRenderProfile RayRenderer::renderScene(const Scene& scene)",
+ what:`<p>结构和光栅化的 renderScene 类似：持有帧锁，分阶段计时（validation / clear / scene_build / render / tone_map），最后把 BVH 构建统计、SDF 统计、各类光线计数写进 profile。</p>`,code:"",why:"",qa:[]}});
+node({id:"p_val",g:"rframe",x:330,y:130,w:210,k:"func",t:"场景校验",s:"非有限值、非法材质全部拒绝",ins:["▶:exec"],outs:["▶:exec"],
+ info:{loc:"RayRenderer.cpp#L1300",sig:"// camera / lights / transforms / triangles / materials / textures / SDF / media",
+ what:`<p>渲染前检查所有输入：相机参数、光源强度非负、变换和顶点属性有限、材质合法、贴图格式支持、渲染目标不能被当贴图采样、SDF 合法、介质不重叠，任何一项不满足都抛异常。</p>`,code:"",
+ why:`<p>蒙特卡洛渲染里一个 NaN 会通过累加污染整个像素，而且极难追查来源。把校验前置到入口，热循环里就可以假设数据合法。</p>`,qa:[]}});
+node({id:"p_bld",g:"rframe",x:600,y:130,w:250,k:"func",t:"RaySceneGeometry + 面光源表",s:"每帧重建 BVH",ins:["▶:exec","scene:struct"],outs:["▶:exec","geometry:struct","area_lights:struct"],drill:"bvhbuild",
+ info:{loc:"RayRenderer.cpp#L1380",sig:"const RaySceneGeometry geometry(scene, bvh_options, options_.sdf_options);",
+ what:`<p>每帧重新构建几何（BVH + SDF 列表），并收集所有自发光三角形和它们的面积作为面光源表，供直接光照采样。</p>`,code:"",
+ why:`<p>每帧重建让渲染器是「无状态」的，场景改了也不会用到过期的 BVH，benchmark 的「整帧」时间也因此包含了构建开销。</p>`,
+ qa:[["面光源只按面积均匀选三角形吗？","这里是对每个发光三角形都采样（不是随机选一个），每个三角形内部按面积均匀采样。光源很多时，更好的做法是按功率（面积 × 亮度）建 CDF 随机选一个，或者用光源 BVH / ReSTIR 做重要性采样。"]]}});
+node({id:"p_par",g:"rframe",x:910,y:130,w:230,k:"par",t:"parallelFor(tile)",s:"每 tile 本地计数器",ins:["▶:exec","geometry:struct"],outs:["每像素每样本:exec"],drill:"tiles",
+ info:{loc:"RayRenderer.cpp#L1410",sig:"worker_pool_->parallelFor(tile_count, [&](std::size_t tile_index) { RayCounters counters; ... tile_counters[tile_index] = counters; });",
+ what:`<p>和光栅化同一个线程池，按 16×16 tile 分发。每个 tile 用自己的 <code>RayCounters</code> 累计光线数、遍历统计等，结束后写到 tile 专属的槽位，渲染完再串行求和。</p>`,code:"",
+ why:`<p>每个 tile 写自己的像素、自己的计数器槽，热循环里没有任何原子操作或锁。如果用全局原子计数器，20 个线程会在同一缓存行上激烈竞争。</p>`,qa:[]}});
+node({id:"p_seed",g:"rframe",x:1200,y:330,w:250,k:"pure",t:"sampleSeed(seed, pixel, sample)",s:"SplitMix64 哈希",ins:["pixel:int","sample:int"],outs:["rng:struct"],
+ info:{loc:"RayRenderer.cpp#L106",sig:"std::uint64_t sampleSeed(std::uint64_t seed, std::size_t pixel, int sample)",
+ what:`<p>用 SplitMix64 的混合函数把全局种子、像素下标和样本下标哈希成这个样本的 RNG 初始状态。<code>nextFloat</code> 取高 24 位映射到 [0,1)。</p>`,
+ code:`return mix64(seed ^ mix64(pixel + C1) ^ mix64(sample + C2));`,
+ why:`<p>随机数只取决于（种子，像素，样本），和是哪个线程、按什么顺序执行无关。所以 1 个线程和 20 个线程渲染出的 HDR 结果逐位一致。用显式的 24 位映射而不是 <code>std::uniform_real_distribution</code>，是因为后者在不同标准库实现下结果不同。</p>`,
+ qa:[["为什么不用每个线程一个 RNG？","线程领到哪些 tile 是动态的，每次运行都不同，同一个像素会拿到不同的随机序列，结果就不可复现，也没法做 A/B 逐位比较。"],
+ ["还有更好的采样序列吗？","这是纯随机采样。低差异序列（Sobol、Halton）或分层采样在同样 spp 下噪声更低、收敛更快，而且同样可以按像素和样本下标直接索引，保持确定性。"]]}});
+node({id:"p_cam",g:"rframe",x:1200,y:90,w:250,k:"pure",t:"makeCameraRay",s:"像素内抖动",ins:["pixel+jitter:Vec2"],outs:["ray:struct"],
+ info:{loc:"RayRenderer.cpp#L418",sig:"Ray RayRenderer::makeCameraRay(const Camera& camera, float pixel_x, float pixel_y) const",
+ what:`<p>针孔相机：用 forward、right、up 构建相机基，按 fov 和宽高比把像素坐标映射到成像平面。路径追踪或 spp > 1 时在像素内随机抖动，否则取像素中心。</p>`,code:"",
+ why:`<p>像素内抖动等于对像素面积做积分，自动得到抗锯齿。</p>`,qa:[]}});
+node({id:"p_int",g:"rframe",x:1510,y:170,w:210,k:"branch",t:"积分器",s:"--integrator",ins:["▶:exec","ray:struct","rng:struct"],outs:["Whitted:exec","Path:exec"],
+ info:{loc:"RayRenderer.cpp#L1432",sig:"if (options_.integrator == RayIntegrator::Whitted) ... else tracePath(...)",what:`<p>两种积分器共享几何、光照、材质和采样工具函数。</p>`,code:"",why:"",qa:[]}});
+node({id:"p_wh",g:"rframe",x:1780,y:60,w:220,k:"macro",t:"traceWhitted",s:"递归 · 确定性",ins:["▶:exec","ray:struct"],outs:["L:Vec3"],drill:"whitted",
+ info:{loc:"RayRenderer.cpp#L684",sig:"Vector3f RayRenderer::traceWhitted(const Ray&, const Scene&, const RaySceneGeometry&, const std::vector<AreaLight>&, int depth, RayCounters&) const",what:`<p>见子图。</p>`,code:"",why:"",qa:[]}});
+node({id:"p_pt",g:"rframe",x:1780,y:270,w:220,k:"macro",t:"tracePath",s:"迭代 · 蒙特卡洛",ins:["▶:exec","ray:struct","rng:struct"],outs:["L:Vec3"],drill:"path",
+ info:{loc:"RayRenderer.cpp#L1065",sig:"Vector3f RayRenderer::tracePath(...) const  // 有介质走 tracePathVolume",what:`<p>见子图。</p>`,code:"",why:"",qa:[]}});
+node({id:"p_acc",g:"rframe",x:2060,y:170,w:230,k:"pure",t:"累加平均 + 无效计数",s:"nonNegativeFinite",ins:["L:Vec3"],outs:["linear:Vec3"],
+ info:{loc:"RayRenderer.cpp#L1441",sig:"if (!finite || negative) ++counters.invalid; accumulated += nonNegativeFinite(sample);",
+ what:`<p>每个样本如果出现 NaN、无穷或负值就计数，并夹到非负有限值再累加。像素值是所有样本的平均，存进线性 HDR 缓冲。</p>`,code:"",
+ why:`<p>benchmark 要求 <code>invalid_samples = 0</code> 才算通过。计数而不是静默丢弃，能在出现数值问题时第一时间发现。</p>`,qa:[]}});
+node({id:"p_tone",g:"rframe",x:2350,y:170,w:230,k:"func",t:"toneMapToImage",s:"ACES 拟合曲线 → sRGB",ins:["linear:Vec3"],outs:["image:Color"],
+ info:{loc:"RayRenderer.cpp#L85",sig:"float acesToneMap(float value)",
+ what:`<p>对线性 HDR 值逐通道做 ACES 拟合曲线压缩到 [0,1]，再编码为 sRGB 字节。</p>`,
+ code:`mapped = x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14);`,
+ formula:"f(x) = x(2.51x + 0.03) / (x(2.43x + 0.59) + 0.14)",
+ why:`<p>物理渲染的亮度范围远超 [0,1]（光源本身、高光），直接截断会让亮部全变成纯白。ACES 曲线在暗部近似线性，亮部平滑压缩，保留亮部层次。线性 HDR 缓冲也单独保留，测试直接比较它的浮点位模式。</p>`,
+ qa:[["逐通道 tone mapping 有什么问题？","逐通道压缩会改变颜色的比例，饱和的亮色会偏色（比如亮红色偏橙偏白）。更好的做法是在亮度上做映射再按比例缩放 RGB，或者用完整的 ACES 色彩管线（含色彩空间变换）。"]]}});
+E.push(["rframe","p_ent","▶","p_val","▶"],["rframe","p_val","▶","p_bld","▶"],["rframe","p_ent","scene","p_bld","scene"],["rframe","p_bld","▶","p_par","▶"],["rframe","p_bld","geometry","p_par","geometry"],
+ ["rframe","p_par","每像素每样本","p_int","▶"],["rframe","p_cam","ray","p_int","ray"],["rframe","p_seed","rng","p_int","rng"],["rframe","p_int","Whitted","p_wh","▶"],["rframe","p_int","Path","p_pt","▶"],
+ ["rframe","p_cam","ray","p_wh","ray"],["rframe","p_cam","ray","p_pt","ray"],["rframe","p_seed","rng","p_pt","rng"],["rframe","p_wh","L","p_acc","L"],["rframe","p_pt","L","p_acc","L"],["rframe","p_acc","linear","p_tone","linear"]);
+COMMENTS.push({g:"rframe",x:1180,y:20,w:1130,h:430,t:"每个像素 × 每个样本（tile 内并行）"});
+
+/* ===== whitted ===== */
+node({id:"w_ent",g:"whitted",x:40,y:150,w:220,k:"event",t:"traceWhitted",s:"有介质时走体积分支",outs:["▶:exec","ray:struct","depth:int"],
+ info:{loc:"RayRenderer.cpp#L684",sig:"Vector3f RayRenderer::traceWhitted(const Ray& ray, ..., int depth, RayCounters&) const",
+ what:`<p>没有活动介质时转到 <code>traceWhittedVacuum</code>：求最近命中，交给 <code>shadeWhittedSurface</code>。有介质时额外做单次散射（固定步长积分），见「参与介质」模块。</p>`,code:"",why:"",qa:[]}});
+node({id:"w_hit",g:"whitted",x:320,y:150,w:220,k:"func",t:"geometry.intersect",s:"三角形 + SDF",ins:["▶:exec","ray:struct"],outs:["▶:exec","hit:HitRecord:struct"],drill:"bvhtrav",
+ info:{loc:"RayRenderer.cpp#L881",sig:"geometry.intersect(ray, kRayEpsilon, +inf, hit, &counters.traversal, &counters.sdf)",what:`<p>没打中任何东西返回黑色（没有环境光）。</p>`,code:"",why:"",qa:[]}});
+node({id:"w_mat",g:"whitted",x:600,y:130,w:210,k:"branch",t:"material.type",s:"shadeWhittedSurface",ins:["▶:exec","hit:HitRecord:struct"],outs:["发光:exec","漫反射:exec","金属:exec","电介质:exec"],
+ info:{loc:"RayRenderer.cpp#L891",sig:"Vector3f RayRenderer::shadeWhittedSurface(const Ray&, const HitRecord&, ..., int depth, RayCounters&) const",
+ what:`<p>按材质类型分派。发光体只在正面返回发光值；漫反射只算直接光照，不追间接光（这是 Whitted 和路径追踪的根本区别）。</p>`,code:"",why:"",qa:[]}});
+node({id:"w_dl",g:"whitted",x:900,y:20,w:250,k:"func",t:"directLighting",s:"点光源 + 面光源 · BRDF = ρ/π",ins:["▶:exec","hit:HitRecord:struct"],outs:["L_direct:Vec3"],
+ info:{loc:"RayRenderer.cpp#L592",sig:"Vector3f RayRenderer::directLighting(const HitRecord&, const Scene&, const RaySceneGeometry&, const std::vector<AreaLight>&, Rng* rng, RayCounters&) const",
+ what:`<p>点光源：平方反比衰减 × 余弦 × 可见性。面光源：在发光三角形上取点（Whitted 用 4 个固定分层样本，路径追踪用 1 个随机样本），乘上两端的余弦和面积除以距离平方。</p>`,
+ code:`// 面光源，一个样本的估计
+L += brdf * emission * (cosθ_surface * cosθ_light * area / d²) * visibility;
+// 4 个固定样本：(0.125,0.375) (0.375,0.875) (0.625,0.125) (0.875,0.625)`,
+ formula:"L ≈ (ρ/π) · L_e · cosθ · cosθ' · A / d² · V，对应 pdf = 1/A 的面积采样",
+ why:`<p>漫反射 BRDF 是 ρ/π，π 来自半球上余弦的积分。面光源从「对立体角积分」换成「对光源面积积分」时，雅可比是 cosθ'/d²，均匀面积采样 pdf 为 1/A，所以估计式里出现 A·cosθ'/d²。</p>`,
+ qa:[["为什么 Whitted 用 4 个固定样本？","固定样本让同一个像素每次渲染结果完全一样，没有噪点，适合做确定性回归测试，但软阴影边缘会出现可见的分层条带。路径追踪里换成随机样本，靠多 spp 平均收敛。"],
+ ["在三角形上均匀取点，为什么要开根号？","sampleTriangle 里 b0 = 1 − √u1。如果直接用两个均匀随机数当重心坐标，点会集中在某个顶点附近。开根号是对三角形面积分布做逆变换采样的结果，保证点在面积上均匀。"]]}});
+node({id:"w_sh",g:"whitted",x:900,y:260,w:250,k:"pure",t:"occludedToPoint",s:"offsetOrigin + 末端容差",ins:["hit:HitRecord:struct","target:Vec3"],outs:["blocked:bool"],
+ info:{loc:"RayRenderer.cpp#L163",sig:"bool occludedToPoint(const HitRecord& hit, const Vector3f& target, const RaySceneGeometry&, ...)",
+ what:`<p>阴影线起点沿几何法线偏移一个 epsilon（朝光线出射的一侧），并对每个坐标再用 <code>nextafter</code> 往外推一个 ULP；终点留出与目标坐标量级相关的容差，避免打到光源自身。</p>`,
+ code:`result = hit.position + normal * (origin_epsilon * sign);
+result[axis] = std::nextafter(result[axis], outward ? +inf : -inf);`,
+ why:`<p>浮点误差会让交点落在表面略下方，从那里发出的光线会立刻打中自己（shadow acne，表现为满屏黑点）。偏移量和坐标大小相关：远离原点时浮点精度更低，需要更大的偏移。</p>`,
+ qa:[["shadow acne 的成因和常见解法？","交点的浮点误差使它可能位于表面内侧，从那里出发的次级光线与同一表面相交。解法：1）起点沿法线偏移；2）设 t_min 下限；3）求交时排除自身图元；4）更严谨的做法是根据交点计算的误差界确定偏移量（PBRT 的方法）。这里用的是 1、2 加上 ULP 推移。"]]}});
+node({id:"w_metal",g:"whitted",x:1220,y:130,w:250,k:"func",t:"金属：递归反射",s:"direct·r + ρ·refl·(1−r)",ins:["▶:exec","hit:HitRecord:struct"],outs:["▶:exec","dir:Vec3"],
+ info:{loc:"RayRenderer.cpp#L914",sig:"return direct * roughness + albedo.cwise(reflection) * (1.0f - roughness);",
+ what:`<p>沿着色法线计算完美反射方向，若反射到表面以下就改用几何法线再反射一次，仍然不行就只返回直接光照。结果是直接光照和反射颜色按 roughness 线性混合。</p>`,code:"",
+ why:`<p>Whitted 只能追一条确定的反射线，没法表达粗糙反射的模糊，所以用 roughness 做了一个经验性的混合。这不是物理正确的 BRDF。</p>`,
+ qa:[["为什么要检查反射方向是否在几何法线下方？","插值得到的着色法线和真实的几何法线不一致时，按着色法线算出的反射方向可能指向表面内部，会造成漏光或黑斑。用几何法线兜底是常见处理。"]]}});
+node({id:"w_diel",g:"whitted",x:1220,y:330,w:250,k:"func",t:"电介质：反射 + 折射",s:"Schlick Fresnel 加权",ins:["▶:exec","hit:HitRecord:struct"],outs:["▶:exec","dirs×2:Vec3"],
+ info:{loc:"RayRenderer.cpp#L931",sig:"return albedo * (reflected_color * F + refracted_color * (1 - F));",
+ what:`<p>根据 front_face 决定折射率比 η = 1/ior（从外进入）或 ior（从内射出）。同时递归追踪反射线和折射线，按 Schlick 近似的 Fresnel 反射率加权。发生全反射时只追反射线。</p>`,
+ code:`F = r0 + (1 - r0) * (1 - cosθ)^5,   r0 = ((1 - n) / (1 + n))²`,
+ formula:"折射：t⊥ = η(d + n cosθ)，t∥ = −n·√(1 − |t⊥|²)；|t⊥|² > 1 时全反射",
+ why:`<p>Whitted 在玻璃处分叉成两条光线，递归深度为 d 时最坏情况是 2^d 条光线，所以 max_depth 很重要。路径追踪则只随机选一条，用概率代替分叉。</p>`,
+ qa:[["推导一下折射方向公式？","斯涅尔定律 η₁sinθ₁ = η₂sinθ₂。把入射方向分解成平行和垂直于法线的分量，垂直于法线的切向分量按 η = η₁/η₂ 缩放：t⊥ = η(d + n·cosθ₁)；折射方向是单位向量，所以法向分量长度为 √(1 − |t⊥|²)，方向指向表面另一侧。根号内为负就是全反射。"],
+ ["Schlick 近似的意义？","完整的 Fresnel 方程要分别算 s、p 偏振，计算量大。Schlick 用 r0 + (1 − r0)(1 − cosθ)⁵ 近似，正入射时等于 r0（玻璃约 4%），掠射时趋近 1，很好地复现了「斜着看玻璃更像镜子」的效果。"]]}});
+node({id:"w_rec",g:"whitted",x:1540,y:230,w:230,k:"macro",t:"traceWhitted(depth+1)",s:"max_depth 截断",ins:["▶:exec","dir:Vec3"],outs:["L:Vec3"],
+ info:{loc:"RayRenderer.cpp#L925",sig:"traceWhitted(Ray(offsetOrigin(hit, reflected), reflected), ..., depth + 1, counters)",
+ what:`<p>递归调用自身。达到 max_depth 时，金属只返回按 roughness 缩放的直接光照，玻璃返回黑色。</p>`,code:"",
+ why:`<p>递归深度上限为 16（命令行参数校验）。截断会让多次反射的玻璃内部偏暗，这是有偏的，但 Whitted 本身就不追求无偏。</p>`,qa:[]}});
+node({id:"w_out",g:"whitted",x:1840,y:150,w:200,k:"pure",t:"返回辐射度",s:"线性 HDR",ins:["L:Vec3","L_direct:Vec3"],outs:["L:Vec3"],
+ info:{loc:"RayRenderer.cpp#L891",sig:"return ...;",what:`<p>递归结果逐层组合返回到 renderScene 的样本累加。</p>`,code:"",why:"",qa:[]}});
+E.push(["whitted","w_ent","▶","w_hit","▶"],["whitted","w_ent","ray","w_hit","ray"],["whitted","w_hit","▶","w_mat","▶"],["whitted","w_hit","hit","w_mat","hit"],
+ ["whitted","w_mat","漫反射","w_dl","▶"],["whitted","w_hit","hit","w_dl","hit"],["whitted","w_hit","hit","w_sh","hit"],["whitted","w_mat","金属","w_metal","▶"],["whitted","w_mat","电介质","w_diel","▶"],
+ ["whitted","w_metal","dir","w_rec","dir"],["whitted","w_diel","dirs×2","w_rec","dir"],["whitted","w_metal","▶","w_rec","▶"],["whitted","w_diel","▶","w_rec","▶"],["whitted","w_rec","L","w_out","L"],["whitted","w_dl","L_direct","w_out","L_direct"]);
+
+/* ===== path ===== */
+node({id:"pa_l",g:"path",x:40,y:170,w:240,k:"event",t:"tracePathVacuum",s:"for depth ≤ max_depth",outs:["▶:exec","ray:struct","throughput:Vec3"],
+ info:{loc:"RayRenderer.cpp#L966",sig:"Vector3f RayRenderer::tracePathVacuum(const Ray&, ..., Rng& rng, RayCounters&) const",
+ what:`<p>迭代而不是递归：维护当前光线、路径吞吐量 throughput（初始为 1）和累计辐射度 radiance。每次反弹更新 throughput，在每个漫反射顶点加上 throughput × 直接光照。</p>`,code:"",
+ why:`<p>迭代写法没有递归栈，深度可以很大（最多 64）；也方便做俄罗斯轮盘赌，只要 break 出循环。</p>`,qa:[]}});
+node({id:"pa_hit",g:"path",x:340,y:170,w:200,k:"func",t:"intersect",s:"不中则结束",ins:["▶:exec","ray:struct"],outs:["▶:exec","hit:HitRecord:struct"],
+ info:{loc:"RayRenderer.cpp#L978",sig:"if (!geometry.intersect(...) || !hit.material) break;",what:`<p>没有环境光，打空直接结束。</p>`,code:"",why:"",qa:[]}});
+node({id:"pa_em",g:"path",x:600,y:20,w:250,k:"branch",t:"命中发光体?",s:"只在 depth 0 或镜面后计入",ins:["▶:exec","hit:HitRecord:struct"],outs:["计入并结束:exec","否:exec"],
+ info:{loc:"RayRenderer.cpp#L988",sig:"if (hit.front_face && (depth == 0 || previous_was_specular)) radiance += throughput * emission;",
+ what:`<p>路径打到光源时，只有两种情况才把发光值加进来：相机直接看到光源（depth 0），或者上一次是镜面反射/折射。</p>`,code:"",
+ why:`<p>漫反射顶点已经通过 NEE 显式采样过光源了，如果余弦采样的路径恰好又打中光源也计入，同一份光就被算了两次。镜面顶点无法做 NEE（delta 分布），所以只能靠路径碰巧打中光源来贡献。</p>`,
+ qa:[["这种做法和 MIS 有什么区别？","这里是「二选一」：漫反射顶点只用光源采样，镜面顶点只用 BSDF 采样。多重重要性采样（MIS）则在每个顶点同时用两种策略，按各自 pdf 加权组合（比如功率启发式）。对小而亮的光源，光源采样好；对大面积光源配合高光泽表面，BSDF 采样好；MIS 能在两种情况下都稳健。这是这个实现可以改进的点。"]]}});
+node({id:"pa_nee",g:"path",x:600,y:230,w:250,k:"func",t:"directLighting (NEE)",s:"每个面光源 1 个随机样本",ins:["▶:exec","hit:HitRecord:struct"],outs:["▶:exec","L_direct:Vec3"],
+ info:{loc:"RayRenderer.cpp#L1001",sig:"radiance += throughput.cwise(directLighting(hit, ..., &rng, counters));",
+ what:`<p>只在漫反射顶点做下一事件估计：向光源连一条阴影线，直接累加光源贡献。和 Whitted 是同一个函数，只是传入了 RNG，面光源改为随机取样。</p>`,code:"",
+ why:`<p>如果只靠随机反弹碰巧打中光源，小光源（Cornell 盒顶上那块灯）会产生极大的噪声。NEE 让每个漫反射顶点都确定地得到一份直接光照贡献，方差大幅降低。</p>`,qa:[]}});
+node({id:"pa_cos",g:"path",x:910,y:230,w:250,k:"pure",t:"sampleCosineHemisphere",s:"pdf = cosθ/π → throughput ×= ρ",ins:["n:Vec3","rng:struct"],outs:["dir:Vec3"],
+ info:{loc:"RayRenderer.cpp#L471",sig:"Vector3f RayRenderer::sampleCosineHemisphere(const Vector3f& normal, Rng& rng) const",
+ what:`<p>Malley 方法：在单位圆盘上均匀取点（半径取 √u），再投影到半球上，然后用法线建一个切线空间把方向转到世界空间。</p>`,
+ code:`r = sqrt(u1);  φ = 2π·u2;
+local = (r cosφ, r sinφ, sqrt(1 - r²));`,
+ formula:"f·cosθ / pdf = (ρ/π)·cosθ / (cosθ/π) = ρ",
+ why:`<p>漫反射的被积函数里有 cosθ，按 cosθ 成比例采样就是重要性采样：BRDF、余弦和 pdf 互相抵消，吞吐量只需乘 albedo。注意这里用的是几何法线采样，没用着色法线。</p>`,
+ qa:[["为什么在圆盘上均匀取点再投影，就能得到余弦分布？","圆盘上面积元投影到半球，半球上的立体角元 dω 投影到圆盘的面积是 cosθ·dω。所以圆盘上均匀分布，对应半球上和 cosθ 成正比的分布。半径取 √u 是为了让点在圆盘面积上均匀。"]]}});
+node({id:"pa_mt",g:"path",x:910,y:20,w:250,k:"pure",t:"金属 / 电介质",s:"扰动反射 · Fresnel 随机选",ins:["hit:HitRecord:struct","rng:struct"],outs:["dir:Vec3"],
+ info:{loc:"RayRenderer.cpp#L1012",sig:"scattered = (perfect + sampleUnitSphere(rng) * roughness).normalize();  // 金属",
+ what:`<p>金属：完美反射方向加上 roughness × 单位球内随机向量，再归一化（《Ray Tracing in One Weekend》的做法）。电介质：以 Fresnel 反射率为概率随机选反射或折射，吞吐量只乘 albedo。两者都标记为镜面顶点。</p>`,code:"",
+ why:`<p>按 Fresnel 概率随机选择，相当于用概率代替 Whitted 里的加权分叉：选中反射的概率正好是反射权重，估计仍然无偏，但每条路径只有一个分支。</p>`,
+ qa:[["这个金属模型的问题在哪？","扰动反射不对应任何真实的 BRDF，能量也不守恒；粗糙金属被当作镜面顶点处理（不做 NEE），roughness 大时噪声会很严重。标准做法是 GGX 微表面模型，配合可见法线采样（VNDF）和 NEE + MIS。"]]}});
+node({id:"pa_rr",g:"path",x:1230,y:120,w:250,k:"branch",t:"俄罗斯轮盘赌",s:"depth ≥ 3 · p ∈ [0.05, 0.95]",ins:["▶:exec","throughput:Vec3"],outs:["存活:exec"],
+ info:{loc:"RayRenderer.cpp#L1047",sig:"survival = clamp(maxComponent(throughput), 0.05, 0.95); if (rng >= survival) break; throughput /= survival;",
+ what:`<p>前 3 次反弹不做；之后以 throughput 最大分量为存活概率（夹在 0.05 到 0.95 之间），没存活就终止路径，存活就把 throughput 除以存活概率。</p>`,code:"",
+ formula:"E[L'] = p · (L / p) + (1 − p) · 0 = L",
+ why:`<p>throughput 很小的路径对结果贡献很小，却和其他路径一样耗时。轮盘赌让它们大概率提前终止，但存活者按 1/p 放大，期望保持不变，所以是无偏的。代价是方差略增。</p>`,
+ qa:[["为什么俄罗斯轮盘赌是无偏的？","存活时贡献是 L/p，概率 p；终止时贡献是 0，概率 1−p。期望 = p·L/p = L，和不做轮盘赌一样。它是用更多的方差换更少的计算量。"],
+ ["为什么存活概率要设上下限？","下限 0.05 防止概率太小、存活者被放大 20 倍以上产生萤火虫（fireflies）；上限 0.95 保证即使 throughput 很大（比如多次镜面反射），路径也终究会终止。"]]}});
+node({id:"pa_nx",g:"path",x:1540,y:150,w:230,k:"func",t:"下一段光线",s:"offsetOrigin · 记录是否镜面",ins:["▶:exec","dir:Vec3"],outs:["回到循环:exec"],
+ info:{loc:"RayRenderer.cpp#L1055",sig:"ray = Ray(offsetOrigin(hit, scattered), scattered); previous_was_specular = specular;",
+ what:`<p>从偏移后的交点沿新方向继续。<code>previous_was_specular</code> 供下一次击中光源时判断是否计入。</p>`,code:"",why:"",qa:[]}});
+E.push(["path","pa_l","▶","pa_hit","▶"],["path","pa_l","ray","pa_hit","ray"],["path","pa_hit","▶","pa_em","▶"],["path","pa_hit","hit","pa_em","hit"],["path","pa_em","否","pa_nee","▶"],["path","pa_hit","hit","pa_nee","hit"],
+ ["path","pa_hit","hit","pa_mt","hit"],["path","pa_hit","hit","pa_cos","n"],["path","pa_nee","▶","pa_rr","▶"],["path","pa_l","throughput","pa_rr","throughput"],["path","pa_cos","dir","pa_nx","dir"],["path","pa_mt","dir","pa_nx","dir"],["path","pa_rr","存活","pa_nx","▶"]);
+
+/* ===== sdfeval ===== */
+node({id:"s_prim",g:"sdfeval",x:40,y:60,w:250,k:"pure",t:"基本体距离函数",s:"球 · 盒 · 环 · 平面",ins:["p:Vec3"],outs:["d:float"],
+ info:{loc:"SDF.cpp#L529",sig:"case NodeType::Sphere / Box / Torus / Plane",
+ what:`<p>四种解析基本体的精确有符号距离：外部为正，内部为负，表面为 0。环面支持任意朝向的轴。</p>`,
+ code:`// 盒子
+q = |p - center| - half_extents;
+d = length(max(q, 0)) + min(max(q.x, q.y, q.z), 0);
+// 环面
+axial = dot(p - c, axis);  radial = |(p - c) - axial*axis|;
+d = sqrt((radial - R)² + axial²) - r;`,
+ why:`<p>盒子公式分两部分：点在外部时，到最近角/边/面的距离是 max(q,0) 的长度；在内部时，到最近面的距离是 q 的最大分量（负数）。两部分互斥，相加就同时覆盖了内外。</p>`,
+ qa:[["推导一下盒子的 SDF？","利用对称性只看第一卦限，q = |p| − b 是点到三个面的有符号距离。若 q 全负，点在内部，离最近的面距离是 max(q)。若有正分量，点在外部，最近点是把正分量投影掉之后的位置，距离是 |max(q,0)|。两者合并就是公式。"]]}});
+node({id:"s_csg",g:"sdfeval",x:360,y:20,w:240,k:"pure",t:"CSG：并 / 交 / 差",s:"min · max · max(a, −b)",ins:["a:float","b:float"],outs:["d:float"],
+ info:{loc:"SDF.cpp#L585",sig:"Union: min(a,b);  Intersection: max(a,b);  Difference: max(a,-b)",
+ what:`<p>两个子树分别求值后组合。</p>`,code:"",
+ why:`<p>并集的 min 在外部是精确距离；交集和差集的 max 在很多区域只是距离的<b>下界</b>，不是精确距离。但它们的 Lipschitz 常数仍然不超过 1，所以对 sphere tracing 是安全的，只是步子会偏小。</p>`,
+ qa:[["CSG 之后还是精确的 SDF 吗？会有什么影响？","不一定。比如两个球的交集，在凹进去的区域 max(a,b) 小于真实距离。只要结果是距离的下界（Lipschitz ≤ 1），sphere tracing 就不会穿过表面，只是会多走几步；但如果用它来做软阴影、AO 这类依赖距离值本身的效果，就会有偏差。"]]}});
+node({id:"s_sm",g:"sdfeval",x:360,y:230,w:240,k:"pure",t:"平滑并",s:"多项式 smin · 参数 k",ins:["a:float","b:float","k:float"],outs:["d:float"],
+ info:{loc:"SDF.cpp#L596",sig:"blend = clamp(0.5 + 0.5 (b - a) / k, 0, 1); d = mix(b, a, blend) - k·blend·(1 - blend);",
+ what:`<p>在两个形状距离接近（差小于 k）的区域把 min 换成一条平滑曲线，形成融合的圆角过渡。</p>`,code:"",
+ formula:"h = clamp(½ + ½(b−a)/k, 0, 1)，smin = lerp(b, a, h) − k·h(1−h)",
+ why:`<p>h(1−h) 在 h = ½ 时最大为 ¼，所以平滑并最多比 min(a,b) 小 k/4。包围盒计算正是利用这个界把子节点的包围盒外扩 k/4。</p>`,
+ qa:[["为什么平滑并的包围盒要外扩？","smin 会比两个输入都小，所以即使某个点在两个子形状各自的零等值面之外，smin 也可能小于 0，在中间「长出」新的表面。只用子形状的零等值面包围盒会把这部分漏掉，所以要对「距离 ≤ k/4」的子水平集求包围盒。"]]}});
+node({id:"s_tree",g:"sdfeval",x:680,y:120,w:250,k:"func",t:"makeBinary",s:"不可变树 · 深度 ≤ 64",ins:["left:struct","right:struct"],outs:["shape:struct"],
+ info:{loc:"SDF.cpp#L725",sig:"SDFShape SDFShape::makeBinary(NodeType type, const SDFShape& left, const SDFShape& right, float smoothing)",
+ what:`<p>用 <code>shared_ptr&lt;const Node&gt;</code> 组成不可变的表达式树，子树可以被多棵树共享。构建时就算好基本体数、运算数、深度、Lipschitz 上界（取左右最大值）和保守包围盒，并检查深度和展开节点数上限。</p>`,code:"",
+ why:`<p>不可变 + 构建时预计算，让求值时的树是只读的，多线程可以直接共享，不需要锁。Lipschitz 取 max 的理由：min、max、smin 都不会让梯度变陡。</p>`,qa:[]}});
+node({id:"s_bnd",g:"sdfeval",x:1000,y:40,w:240,k:"pure",t:"sublevelBounds",s:"保守包围盒",ins:["shape:struct"],outs:["bounds:struct"],
+ info:{loc:"SDF.cpp#L497",sig:"SDFBounds sublevelBounds(double level) const",
+ what:`<p>递归计算「距离 ≤ level 的点集」的包围盒：并集取并，交集取交，差集只取左边，平滑并先把 level 增加 k/4 再取并，平面无界。</p>`,code:"",
+ why:`<p>sphere tracing 前先用这个盒子裁剪光线区间，盒子外的部分直接跳过，不用逐步求值。</p>`,qa:[]}});
+node({id:"s_grid",g:"sdfeval",x:40,y:330,w:250,k:"pure",t:"SampledSDFGrid",s:"稠密网格 · 三线性",ins:["samples:float[]:float"],outs:["d:float","L:float"],
+ info:{loc:"SDF.cpp#L140",sig:"float SampledSDFGrid::distance(const Vector3f& point) const",
+ what:`<p>规则网格上存距离值，查询时三线性插值（7 次 lerp）。构建时扫描所有相邻节点的差分，求出插值场的 Lipschitz 上界，并要求边界节点非负（形状必须在网格内部）。</p>`,code:"",
+ why:`<p>三线性插值后的场不再是精确距离，梯度可能大于 1；如果仍按 L = 1 步进，就可能穿过表面。所以 Lipschitz 要从数据里实际算出来，步长按 |d|/L 缩小。</p>`,
+ qa:[["为什么要算采样网格的 Lipschitz 常数？","sphere tracing 的安全性依赖「|∇d| ≤ L」：从距离为 d 的点前进 d/L，保证不会越过表面。采样、截断、插值都可能让梯度大于 1，假设 L = 1 会漏掉薄的部分。三线性插值是分段多线性的，最大梯度由相邻节点差分决定，所以可以精确给出上界。"]]}});
+node({id:"s_sp",g:"sdfeval",x:360,y:420,w:250,k:"pure",t:"SparseSampledSDFGrid",s:"8³ brick · 截断后压缩",ins:["dense:struct"],outs:["d:float"],
+ info:{loc:"SDF.cpp#L301",sig:"SparseSampledSDFGrid::SparseSampledSDFGrid(const SampledSDFGrid& dense, float distance_limit)",
+ what:`<p>先把稠密网格截断到 [−τ, τ]（TSDF），再切成 8×8×8 的 brick：全部等于 +τ 的是常量外部块，全部等于 −τ 的是常量内部块，都不存样本；其余的是活动块，存 9³ 个节点。</p>`,code:"",
+ why:`<p>远离表面的地方距离值本来就被截断成常量，没有信息量。只有表面附近窄带内的 brick 需要存数据，内存按表面积而不是体积增长。查询结果和截断后的稠密网格逐位一致。</p>`,
+ qa:[["稀疏 TSDF 和 BVH 怎么比？","兔子 129³ 实验：稀疏 TSDF 轮廓 IoU 0.998845，内存约 4.96 MB，稠密网格 8.59 MB，BVH 约 15.05 MB；但查询中位数 45.04 ms，仍慢于 SAH BVH 的 29.96 ms。SDF 的优势在于内存可控、可以做软阴影/AO/碰撞等距离相关的操作，劣势是近似几何和 sphere tracing 的步数开销。"]]}});
+E.push(["sdfeval","s_prim","d","s_csg","a"],["sdfeval","s_prim","d","s_sm","a"],["sdfeval","s_csg","d","s_tree","left"],["sdfeval","s_sm","d","s_tree","right"],["sdfeval","s_tree","shape","s_bnd","shape"],
+ ["sdfeval","s_grid","d","s_sp","dense"],["sdfeval","s_sp","d","s_tree","right"]);
+
+/* ===== sphere ===== */
+node({id:"sp_in",g:"sphere",x:40,y:140,w:230,k:"event",t:"intersectSdfObject",s:"单个 SDF 物体",outs:["▶:exec","ray:struct"],
+ info:{loc:"RayGeometry.cpp#L1422",sig:"bool RaySceneGeometry::intersectSdfObject(std::size_t, const Ray&, float t_min, float t_max, HitRecord&, SDFTraceStats*) const",
+ what:`<p>把参数区间夹到 max_distance 范围内，读取形状的 Lipschitz 上界，非法就直接放弃。</p>`,code:"",why:"",qa:[]}});
+node({id:"sp_clip",g:"sphere",x:330,y:140,w:230,k:"func",t:"包围盒裁剪区间",s:"带容差外扩",ins:["▶:exec","ray:struct","bounds:struct"],outs:["▶:exec","[start,end]:float"],
+ info:{loc:"RayGeometry.cpp#L1460",sig:"bounds.intersect(ray, start, end, &entry, &exit); start = max(query_start, entry - padding);",
+ what:`<p>有界形状先和保守包围盒求交，把步进区间缩到盒子内，再向两侧各外扩一点容差。</p>`,code:"",
+ why:`<p>盒子形状的表面恰好和包围盒的面重合，slab 求出的进入点和牛顿精修后的根可能因舍入落在面的两侧；如果严格从进入点开始，合法的根可能被当成「在 t_min 之前」而丢掉。外扩容差就是为了这个边界情况。</p>`,qa:[]}});
+node({id:"sp_loop",g:"sphere",x:620,y:120,w:220,k:"macro",t:"for step < max_steps",s:"超出步数算未命中",ins:["▶:exec","[start,end]:float"],outs:["循环体:exec","p:Vec3"],
+ info:{loc:"RayGeometry.cpp#L1486",sig:"for (std::size_t step = 0; step < sdf_options_.max_steps; ++step)",
+ what:`<p>步数用完还没命中就当作未命中，并计入 step_limit_exhaustions 统计。</p>`,code:"",
+ why:`<p>光线掠过表面时 d 一直很小但不为 0，步长也很小，可能耗尽步数。这是 sphere tracing 的固有弱点，表现为轮廓处的漏洞。</p>`,
+ qa:[["掠射角下 sphere tracing 很慢怎么办？","常见改进：1）过松弛（over-relaxation），步长乘以 1~2 的系数，越过表面时回退；2）用更紧的 Lipschitz 估计；3）对稀疏网格先用 brick 级的空域跳跃；4）用包围体层次只在物体附近步进。"]]}});
+node({id:"sp_ev",g:"sphere",x:900,y:120,w:200,k:"pure",t:"shape.distance(p)",s:"递归求值整棵树",ins:["p:Vec3"],outs:["d:float"],
+ info:{loc:"SDF.cpp#L782",sig:"float SDFShape::distance(const Vector3f& point, std::uint64_t* node_evaluations) const",what:`<p>每一步都要从根求值整棵 CSG 树，节点求值次数被统计下来，用于解释性能。</p>`,code:"",why:"",qa:[]}});
+node({id:"sp_q",g:"sphere",x:1160,y:120,w:220,k:"branch",t:"|d| ≤ tolerance?",s:"容差随坐标量级变化",ins:["▶:exec","d:float"],outs:["命中:exec","继续:exec"],
+ info:{loc:"RayGeometry.cpp#L1505",sig:"tolerance = pointTolerance(point, hit_epsilon); if (|distance| <= tolerance) ...",
+ what:`<p>进入表面容差带就认为命中。容差和点坐标的大小有关。</p>`,code:"",
+ why:`<p>浮点数在大坐标处精度更低，固定的绝对 epsilon 在远处会小于一个 ULP，永远达不到；在原点附近又可能太大。按坐标量级缩放更稳健。</p>`,qa:[]}});
+node({id:"sp_n",g:"sphere",x:1440,y:20,w:230,k:"pure",t:"estimateSdfNormal",s:"中心差分 · 6 次求值",ins:["p:Vec3"],outs:["n:Vec3"],
+ info:{loc:"RayGeometry.cpp#L1382",sig:"bool RaySceneGeometry::estimateSdfNormal(const SDFShape&, const Vector3f& point, float epsilon, Vector3f& normal, SDFTraceStats*) const",
+ what:`<p>沿三个轴各取 ±ε 两个点求距离，差分得到梯度，归一化作为法线。</p>`,code:"",
+ formula:"n ≈ normalize( d(p+εx) − d(p−εx), d(p+εy) − d(p−εy), d(p+εz) − d(p−εz) )",
+ why:`<p>SDF 的梯度就是表面法线方向。中心差分误差是 O(ε²)，比单边差分的 O(ε) 好。</p>`,
+ qa:[["能不能少求几次？","四面体技巧：沿四面体的四个顶点方向各求一次，加权求和就能得到梯度，只需 4 次求值而不是 6 次，精度相近，在着色器里很常用。解析基本体也可以直接写出精确梯度。"]]}});
+node({id:"sp_nt",g:"sphere",x:1440,y:230,w:230,k:"pure",t:"牛顿精修",s:"t' = t − d / (n · dir)",ins:["n:Vec3","d:float"],outs:["t:float"],
+ info:{loc:"RayGeometry.cpp#L1515",sig:"refined_parameter = t - distance / dot(normal, ray.direction);",
+ what:`<p>在容差带内做一步牛顿迭代，把 t 推到 d = 0 的位置；精修后的距离更小才采用。如果精修后的根落在 t_min 之前（说明是起点附近另一个表面的容差带），就跳过这个带继续找。</p>`,code:"",
+ why:`<p>沿光线方向 d(t) 的导数是 ∇d · dir = n · dir，所以一步牛顿就是 t − d/(n·dir)。容差带有一定厚度，不精修的话交点会有系统性偏移，影响阴影和折射。</p>`,qa:[]}});
+node({id:"sp_st",g:"sphere",x:1160,y:330,w:220,k:"pure",t:"安全步长",s:"Δt = |d| / (|dir| · L)",ins:["d:float","L:float"],outs:["Δt:float"],
+ info:{loc:"RayGeometry.cpp#L1608",sig:"parameter_step = |distance| / (direction_length * field_lipschitz);",
+ what:`<p>按距离除以 Lipschitz 常数前进；光线方向不一定是单位向量，所以还要除以方向长度把世界距离换成参数距离。</p>`,code:"",
+ formula:"|d(p) − d(q)| ≤ L·|p − q|  ⇒  半径 |d|/L 的球内没有表面",
+ why:`<p>这就是 sphere tracing 名字的由来：当前点到表面至少还有 |d|/L 的距离，以它为半径的球里一定没有表面，可以放心跳过去。</p>`,
+ qa:[["从内部出发的光线怎么处理？","内部 d 为负，代码用 |d| 前进，所以从内部出发也能找到出射面，这对折射光线在 SDF 玻璃里传播是必须的。"]]}});
+node({id:"sp_all",g:"sphere",x:1730,y:140,w:240,k:"func",t:"intersectSdf",s:"多物体取最近",ins:["t:float"],outs:["hit:HitRecord:struct"],
+ info:{loc:"RayGeometry.cpp#L1640",sig:"bool RaySceneGeometry::intersectSdf(const Ray&, float t_min, float t_max, HitRecord&, SDFTraceStats*) const",
+ what:`<p>逐个物体 trace，后面的物体用当前最近的 t 作为上限；新命中必须比当前最近近出一个容差才替换。</p>`,code:"",
+ why:`<p>SDF 物体没有建 BVH，是线性遍历。物体数量少时没问题，多了就需要对 SDF 物体也建包围体层次。</p>`,qa:[]}});
+E.push(["sphere","sp_in","▶","sp_clip","▶"],["sphere","sp_in","ray","sp_clip","ray"],["sphere","sp_clip","▶","sp_loop","▶"],["sphere","sp_clip","[start,end]","sp_loop","[start,end]"],["sphere","sp_loop","p","sp_ev","p"],
+ ["sphere","sp_loop","循环体","sp_q","▶"],["sphere","sp_ev","d","sp_q","d"],["sphere","sp_loop","p","sp_n","p"],["sphere","sp_n","n","sp_nt","n"],["sphere","sp_ev","d","sp_nt","d"],["sphere","sp_ev","d","sp_st","d"],["sphere","sp_nt","t","sp_all","t"]);
+COMMENTS.push({g:"sphere",x:600,y:-20,w:1090,h:450,t:"每一步"});
+
+/* ===== volpath ===== */
+node({id:"v_im",g:"volpath",x:40,y:40,w:240,k:"pure",t:"intersectMedium",s:"slab → [t_enter, t_exit]",ins:["ray:struct","medium:struct"],outs:["interval:struct"],
+ info:{loc:"Volume.cpp#L103",sig:"bool intersectMedium(const HomogeneousMedium&, const Ray&, float t_min, float t_max, MediumInterval&)",
+ what:`<p>和 AABB 求交一样的 slab 方法，额外输出这段区间的世界空间长度（参数长度 × 方向长度），供透射率和光学深度使用。</p>`,code:"",why:"",qa:[]}});
+node({id:"v_g",g:"volpath",x:340,y:40,w:250,k:"func",t:"gatherMediumIntervals",s:"截到表面命中处",ins:["▶:exec","interval:struct","t_surface:float"],outs:["▶:exec","intervals:struct"],
+ info:{loc:"RayRenderer.cpp#L210",sig:"std::vector<ActiveMediumInterval> gatherMediumIntervals(const Scene&, const Ray&, float t_min, float t_max, ...)",
+ what:`<p>先求表面最近命中，然后收集光线在 [0, t_surface] 之间穿过的所有介质区间，按进入顺序排列。介质之间不允许重叠（校验时保证）。</p>`,code:"",why:"",qa:[]}});
+node({id:"v_ff",g:"volpath",x:340,y:260,w:250,k:"pure",t:"sampleFreeFlight(u, 1)",s:"采样单位速率光学深度",ins:["u:float"],outs:["τ:float"],
+ info:{loc:"Volume.cpp#L188",sig:"float sampleFreeFlight(float u, float sigma_t)",
+ what:`<p>按指数分布采样：τ = −ln(1−u)/σ。这里传 σ = 1，得到的是「光学深度」而不是距离。用 <code>log1p</code> 提高 u 接近 0 时的精度。</p>`,code:"",
+ formula:"p(τ) = e^(−τ)  ⇒  τ = −ln(1 − u)",
+ why:`<p>均匀介质里光子在距离 s 处首次碰撞的概率密度是 σt·e^(−σt·s)，逆变换采样就得到这个公式。</p>`,qa:[]}});
+node({id:"v_w",g:"volpath",x:660,y:120,w:250,k:"func",t:"逐区间扣减光学深度",s:"分段均匀介质的解析定位",ins:["▶:exec","intervals:struct","τ:float"],outs:["事件:exec","无事件:exec","position:Vec3"],
+ info:{loc:"RayRenderer.cpp#L1108",sig:"for (active : intervals) { if (τ < σt·len) { 事件位置 = t_enter + τ/σt; break; } τ -= σt·len; }",
+ what:`<p>按顺序走过每个介质区间：区间的光学长度是 σt × 世界长度；剩余 τ 小于它，事件就发生在这个区间内 τ/σt 处；否则扣掉继续。走完所有区间都没发生事件，说明光线到达了表面。</p>`,code:"",
+ why:`<p>先采样一个和介质无关的单位光学深度，再按各段的 σt 消耗它，这样多个不同密度的介质串联也只需要一个随机数，而且是精确的（对分段常数介质没有离散化误差）。</p>`,
+ qa:[["没发生介质事件时，为什么吞吐量不用乘透射率？","因为是按透射率采样的：到达表面的概率恰好等于整段的透射率 T。估计式里 T 和这个概率相除，正好抵消。同理，发生事件时吞吐量只需乘单次散射反照率 σs/σt。"],
+ ["非均匀介质（比如烟雾体素）怎么办？","σt 随位置变化时无法解析求逆，常用 delta tracking（Woodcock）：用一个大于等于处处 σt 的上界 σmax 采样，每次碰撞以 σt(x)/σmax 的概率接受为真实碰撞，否则是「虚碰撞」继续前进。比例采样同样无偏。"]]}});
+node({id:"v_a",g:"volpath",x:980,y:20,w:230,k:"pure",t:"throughput ×= σs / σt",s:"单次散射反照率",ins:["medium:struct"],outs:["throughput:Vec3"],
+ info:{loc:"RayRenderer.cpp#L1131",sig:"albedo = sigma_s / sigma_t; throughput *= albedo;",what:`<p>碰撞中被吸收的部分直接体现为吞吐量按反照率衰减。</p>`,code:"",why:"",qa:[]}});
+node({id:"v_dl",g:"volpath",x:980,y:220,w:250,k:"func",t:"volumeDirectLighting",s:"介质中的 NEE",ins:["▶:exec","position:Vec3","throughput:Vec3","T:float"],outs:["▶:exec","L_direct:Vec3"],
+ info:{loc:"RayRenderer.cpp#L518",sig:"Vector3f RayRenderer::volumeDirectLighting(const Vector3f& point, ...) const",
+ what:`<p>和表面的 directLighting 类似，但没有余弦项（介质里没有表面法线），相函数是各向同性的 1/(4π)，可见性用 visibilityToPoint：被不透明物体挡住为 0，否则为沿途介质的透射率。</p>`,code:"",
+ why:`<p>体积阴影是「连续」的：雾越厚，光源越暗。这就是 volume-shadow 预设要验证的效果。</p>`,qa:[]}});
+node({id:"v_t",g:"volpath",x:1290,y:300,w:240,k:"pure",t:"beerLambert",s:"T = exp(−σt · d)",ins:["σt:float","d:float"],outs:["T:float"],
+ info:{loc:"Volume.cpp#L172",sig:"float beerLambert(float sigma_t, float world_length)",
+ what:`<p>计算光学深度 σt·d 并取指数，用 double 防止溢出。多个介质区间的透射率相乘。</p>`,code:"",
+ formula:"T(d) = e^(−∫σt ds) = e^(−σt·d)（均匀介质）",
+ why:`<p>volume-slab 预设就是它的解析测试：1 米厚、σa = ln2 的吸收层，发光值 (4,2,1) 穿过后必须严格等于 (2,1,0.5)。</p>`,qa:[]}});
+node({id:"v_iso",g:"volpath",x:1290,y:80,w:240,k:"pure",t:"sampleIsotropicDirection",s:"各向同性相函数",ins:["rng:struct"],outs:["dir:Vec3"],
+ info:{loc:"RayRenderer.cpp#L463",sig:"z = 1 - 2u1; φ = 2π u2; r = sqrt(1 - z²);",
+ what:`<p>在整个球面上均匀采样新的散射方向，pdf = 1/(4π)，与各向同性相函数相等，所以吞吐量不变。</p>`,code:"",
+ why:`<p>z 在 [−1,1] 上均匀，等价于球面上均匀（阿基米德帽盒定理：球面上任意两个平行平面之间的面积只和间距有关）。</p>`,
+ qa:[["真实的云雾为什么不用各向同性？","云和雾的水滴尺寸和光波长相当，散射强烈地偏向前方（米氏散射），常用 Henyey-Greenstein 相函数，用参数 g 控制前向/后向程度。各向同性只是 g = 0 的特例。"]]}});
+node({id:"v_s",g:"volpath",x:980,y:440,w:250,k:"macro",t:"表面分支",s:"与 tracePathVacuum 相同",ins:["无事件:exec"],outs:["▶:exec"],drill:"path",
+ info:{loc:"RayRenderer.cpp#L1177",sig:"// 没有介质事件：走表面着色",what:`<p>没发生介质事件就按表面路径追踪处理：发光体、NEE、余弦采样、金属、玻璃，见路径追踪子图。区别是 NEE 的阴影线换成了带透射率的 visibilityToPoint。</p>`,code:"",why:"",qa:[]}});
+E.push(["volpath","v_im","interval","v_g","interval"],["volpath","v_g","▶","v_w","▶"],["volpath","v_g","intervals","v_w","intervals"],["volpath","v_ff","τ","v_w","τ"],
+ ["volpath","v_w","事件","v_dl","▶"],["volpath","v_w","position","v_dl","position"],["volpath","v_w","无事件","v_s","无事件"],["volpath","v_t","T","v_dl","T"],["volpath","v_a","throughput","v_dl","throughput"],["volpath","v_g","intervals","v_a","medium"]);
+
+/* ===== meshsdf ===== */
+node({id:"m_top",g:"meshsdf",x:40,y:120,w:250,k:"func",t:"buildIndexedTopology",s:"按位置焊接 + 统计边",ins:["▶:exec","model:struct"],outs:["▶:exec","topology:struct"],
+ info:{loc:"MeshProcessing.cpp#L75",sig:"IndexedTopology buildIndexedTopology(const Model& model)",
+ what:`<p>OBJ/PLY 的顶点常常是重复的（同一位置因 UV 或法线不同而拆开），先按位置哈希焊接成唯一顶点。然后对每条无向边记录出现次数和方向和（start < end 记 +1，否则 −1）。</p>`,code:"",
+ why:`<p>闭合、绕序一致的流形网格里，每条边恰好被两个面共享，而且两个面里方向相反，方向和为 0。用两个计数就能判断边界边、非流形边和绕序冲突。</p>`,qa:[]}});
+node({id:"m_rep",g:"meshsdf",x:350,y:40,w:240,k:"pure",t:"边分类 + 边界环计数",s:"reportFor · countBoundaryLoops",ins:["topology:struct"],outs:["report:struct"],
+ info:{loc:"MeshProcessing.cpp#L128",sig:"MeshTopologyReport reportFor(const IndexedTopology& topology)",
+ what:`<p>出现 1 次是边界边，不是 2 次是非流形边，2 次但方向和不为 0 是绕序不一致。边界边按「终点 → 下一条起点」串成环，统计简单闭合环的数量。</p>`,code:"",
+ why:`<p>斯坦福兔子底部有 5 个洞（扫描时被台座挡住），这一步会把它们找出来。</p>`,qa:[]}});
+node({id:"m_fill",g:"meshsdf",x:650,y:120,w:250,k:"func",t:"fillSimpleBoundaryHoles",s:"质心扇形封口",ins:["▶:exec","report:struct"],outs:["▶:exec","closed:Model:struct"],
+ info:{loc:"MeshProcessing.cpp#L188",sig:"MeshHoleFillReport fillSimpleBoundaryHoles(Model& model)",
+ what:`<p>只处理「内部是流形且绕序一致、边界是简单闭合环」的情况，否则抛异常。对每个洞，在边界顶点的质心处加一个新顶点，和每条边界边组成一个三角形，绕序与相邻面保持一致。</p>`,code:"",
+ why:`<p>符号距离需要闭合的表面才有「内外」之分。质心扇形是最简单的补洞方式，对凸的小洞足够；凹的大洞可能产生自相交，需要更复杂的三角化（比如耳切法或最小面积三角化）。文档里明确把补洞后的兔子标注为「派生数据」。</p>`,qa:[]}});
+node({id:"m_cl",g:"meshsdf",x:960,y:40,w:240,k:"pure",t:"validateClosedSurface",s:"每条边 2 次且方向相反",ins:["closed:Model:struct"],outs:["ok:bool"],
+ info:{loc:"MeshDistanceField.cpp#L85",sig:"void validateClosedSurface(const std::vector<WorldTriangle>& triangles)",what:`<p>烘焙前再验证一次闭合性，不满足就拒绝烘焙。</p>`,code:"",why:"",qa:[]}});
+node({id:"m_bvh",g:"meshsdf",x:960,y:220,w:240,k:"func",t:"构建 BVH",s:"射线 BVH + 距离 BVH",ins:["▶:exec","closed:Model:struct"],outs:["▶:exec","bvh:struct"],drill:"bvhbuild",
+ info:{loc:"MeshDistanceField.cpp#L180",sig:"BVH bvh(triangles, options.bvh_options);",what:`<p>同一个 BVH 类，同时服务最近点查询和穿越计数。</p>`,code:"",why:"",qa:[]}});
+node({id:"m_bake",g:"meshsdf",x:1270,y:200,w:250,k:"par",t:"bakeMeshSignedDistanceField",s:"按 z 切片并行",ins:["▶:exec","bvh:struct"],outs:["每个节点:exec"],drill:"tiles",
+ info:{loc:"MeshDistanceField.cpp#L125",sig:"MeshSdfBakeResult bakeMeshSignedDistanceField(const std::vector<WorldTriangle>&, const MeshSdfBakeOptions&)",
+ what:`<p>网格是 resolution³ 的立方体，按网格最长边加上 padding 确定体素大小。用 WorkerPool 按 z 切片并行，每个切片有自己的统计槽，结束后串行汇总。</p>`,code:"",
+ why:`<p>每个节点的计算完全独立，而且只写自己的位置，天然适合并行；按切片分任务，任务粒度适中。同样做到了 1 线程和 N 线程逐位一致。</p>`,qa:[]}});
+node({id:"m_cp",g:"meshsdf",x:1580,y:80,w:240,k:"pure",t:"BVH::closestPoint",s:"分支定界 → |d|",ins:["p:Vec3"],outs:["|d|:float"],
+ info:{loc:"RayGeometry.cpp#L1111",sig:"bool BVH::closestPoint(const Vector3f& point, ClosestPointRecord& closest, double maximum_squared_distance, BVHPointQueryStats*) const",
+ what:`<p>遍历 BVH，用点到 AABB 的距离作为下界：下界已经大于当前最优就剪掉整棵子树。叶子里精确计算点到三角形的最近点（按 Voronoi 区域分顶点、边、面三种情况）。退化三角形在独立的距离 BVH 里也会被查询。</p>`,code:"",
+ why:`<p>和光线遍历是同一个「分支定界」思路，只是剪枝条件从「进入距离 > 最近 t」换成「到盒子的距离 > 当前最近距离」。</p>`,qa:[]}});
+node({id:"m_par",g:"meshsdf",x:1580,y:300,w:250,k:"pure",t:"collectSurfaceCrossings × 3",s:"奇偶投票定符号",ins:["p:Vec3"],outs:["inside:bool"],
+ info:{loc:"RayGeometry.cpp#L1219",sig:"bool BVH::collectSurfaceCrossings(const Ray&, float t_min, float t_max, std::vector<float>& crossings, ...) const",
+ what:`<p>从节点沿三个固定的「不规则」方向各发一条射线，收集所有和网格的交点，排序并合并距离很近的重复交点（共享边会被相邻两个三角形各算一次）。交点数为奇数说明在内部；三票里至少两票是内部才判为内部。</p>`,code:"",
+ why:`<p>射线穿过闭合表面时内外交替，所以交点数的奇偶性表示内外。单条射线可能正好擦过边或顶点导致计数错误，选三个不对齐坐标轴的方向投票，能大大降低这种概率。</p>`,
+ qa:[["除了射线奇偶性，还有什么定符号的方法？","1）角加权伪法线：看最近点处的法线和点到最近点向量的点积符号，只需一次最近点查询，但要求网格质量好；2）广义环绕数（generalized winding number）：对所有三角形求立体角之和，对有洞、自相交的网格也稳健，代价较高但可以用 BVH 加速；3）体素化后泛洪填充外部。"]]}});
+node({id:"m_out",g:"meshsdf",x:1890,y:200,w:240,k:"func",t:"截断 + 稀疏 brick",s:"送入 SDF 模块",ins:["|d|:float","inside:bool"],outs:["grid:struct"],drill:"sdfeval",
+ info:{loc:"MeshDistanceField.cpp#L300",sig:"SampledSDFGrid → truncated(τ) → SparseSampledSDFGrid",
+ what:`<p>组合成有符号距离写入网格，再按截断带宽截断，压成稀疏 brick 网格，作为一个 SDF 叶子节点参与渲染。benchmark 会把它和中位数 BVH、SAH BVH 在同一组光线上比较精度、内存和速度。</p>`,code:"",why:"",qa:[]}});
+E.push(["meshsdf","m_top","▶","m_fill","▶"],["meshsdf","m_top","topology","m_rep","topology"],["meshsdf","m_rep","report","m_fill","report"],["meshsdf","m_fill","closed","m_cl","closed"],["meshsdf","m_fill","▶","m_bvh","▶"],["meshsdf","m_fill","closed","m_bvh","closed"],
+ ["meshsdf","m_bvh","▶","m_bake","▶"],["meshsdf","m_bvh","bvh","m_bake","bvh"],["meshsdf","m_cp","|d|","m_out","|d|"],["meshsdf","m_par","inside","m_out","inside"]);
+COMMENTS.push({g:"meshsdf",x:1560,y:20,w:290,h:420,t:"每个网格节点"});
+
+/* ---------- geometry ---------- */
+const HEAD=40, ROW=22, PAD=12;
+function parsePin(s){const p=s.split(":");const name=p[0];let t=p[p.length-1];const label=p.length===3?p[0]+" : "+p[1]:p[0]+(t==="exec"?"":" : "+t);
+  if(t.endsWith("[]")) t=t.slice(0,-2);return {name,t:TYPES[t]?t:"struct",label:p.length===3?p[1]:(t==="exec"?"":t),arr:s.includes("[]")||s.includes("[3]")};}
+N.forEach(n=>{n.ins=(n.ins||[]).map(parsePin);n.outs=(n.outs||[]).map(parsePin);const rows=Math.max(n.ins.length,n.outs.length);n.h=HEAD+rows*ROW+PAD+(n.drill?18:0);});
+const byId=Object.fromEntries(N.map(n=>[n.id,n]));
+function pinPos(n,side,name){const list=side==="in"?n.ins:n.outs;let i=list.findIndex(p=>p.name===name);if(i<0)i=0;return {x:side==="in"?n.x:n.x+n.w,y:n.y+HEAD+i*ROW+ROW/2,t:list[i]?list[i].t:"struct"};}
+
+/* ---------- render ---------- */
+const svg=document.getElementById("canvas"),view=document.getElementById("view"),stage=document.getElementById("stage");
+const NS="http://www.w3.org/2000/svg";
+const el=(t,a={},p)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);if(p)p.appendChild(e);return e;};
+let cur="frame",sel=null,tf={x:0,y:0,k:1},wireEls=[],fx=null;
+
+function draw(){
+  view.innerHTML="";
+  const nodes=N.filter(n=>n.g===cur),edges=E.filter(e=>e[0]===cur);
+  const connected=new Set();edges.forEach(e=>{connected.add(e[1]+">"+e[2]);connected.add(e[3]+"<"+e[4]);});
+  COMMENTS.filter(c=>c.g===cur).forEach(c=>{const g=el("g",{class:"cmt"},view);el("rect",{x:c.x,y:c.y,width:c.w,height:c.h,rx:8},g);const t=el("text",{x:c.x+12,y:c.y+22},g);t.textContent=c.t;});
+  const wires=el("g",{},view);wireEls=[];
+  edges.forEach(e=>{const a=byId[e[1]],b=byId[e[3]];if(!a||!b)return;const p=pinPos(a,"out",e[2]),q=pinPos(b,"in",e[4]);
+    const dx=Math.max(60,Math.abs(q.x-p.x)*.5);
+    const path=el("path",{d:`M${p.x},${p.y} C${p.x+dx},${p.y} ${q.x-dx},${q.y} ${q.x},${q.y}`,class:"wire"+(p.t==="exec"?" exec":""),stroke:cssv(TYPES[p.t])},wires);
+    if(p.t!=="exec")path.classList.add("data");
+    path.dataset.a=e[1];path.dataset.b=e[3];wireEls.push({a:e[1],b:e[3],path,color:cssv(TYPES[p.t])});});
+  fx=el("g",{},view);
+  nodes.forEach(n=>{
+    const g=el("g",{class:"node",transform:`translate(${n.x},${n.y})`,tabindex:0,role:"button","aria-label":n.t},view);g.dataset.id=n.id;
+    el("rect",{class:"body",width:n.w,height:n.h,rx:7},g);
+    const hc=cssv(KIND[n.k][1]);
+    el("path",{d:`M0,7 a7,7 0 0 1 7,-7 h${n.w-14} a7,7 0 0 1 7,7 v${HEAD-12} h-${n.w} z`,fill:hc},g);
+    const tt=el("text",{class:"ttl",x:12,y:18},g);tt.textContent=n.t;
+    const st=el("text",{class:"sub",x:12,y:32},g);st.textContent=n.s||"";
+    const drawPin=(p,i,side)=>{const y=HEAD+i*ROW+ROW/2,x=side==="in"?0:n.w;const c=cssv(TYPES[p.t]);const on=connected.has(n.id+(side==="in"?"<":">")+p.name);
+      if(p.t==="exec"){const s=6;el("path",{d:`M${x-s},${y-s} h${s} l${s},${s} l-${s},${s} h-${s} z`,fill:on?c:"none",stroke:c,"stroke-width":1.5},g);}
+      else if(p.arr){el("rect",{x:x-5,y:y-5,width:10,height:10,rx:1.5,fill:on?c:"none",stroke:c,"stroke-width":1.5},g);}
+      else el("circle",{cx:x,cy:y,r:5,fill:on?c:"none",stroke:c,"stroke-width":1.5},g);
+      const lbl=p.name==="▶"?"":p.name;const tx=el("text",{class:"pl",x:side==="in"?12:n.w-12,y:y+4,"text-anchor":side==="in"?"start":"end"},g);tx.textContent=lbl;};
+    n.ins.forEach((p,i)=>drawPin(p,i,"in"));n.outs.forEach((p,i)=>drawPin(p,i,"out"));
+    if(n.drill){const d=el("text",{class:"drill",x:12,y:n.h-10},g);d.textContent="⤵ 双击进入子图";}
+    g.addEventListener("click",ev=>{ev.stopPropagation();select(n.id);});
+    g.addEventListener("dblclick",ev=>{ev.stopPropagation();if(n.drill)go(n.drill);});
+    g.addEventListener("keydown",ev=>{if(ev.key==="Enter"){select(n.id);} if(ev.key===" "&&n.drill){ev.preventDefault();go(n.drill);}});
+  });
+  applySel();
+}
+function applySel(){
+  svg.classList.toggle("focus",!!sel);
+  const near=new Set();
+  view.querySelectorAll(".wire").forEach(w=>{const hot=sel&&(w.dataset.a===sel||w.dataset.b===sel);w.classList.toggle("hot",!!hot);if(hot){near.add(w.dataset.a);near.add(w.dataset.b);}});
+  view.querySelectorAll(".node").forEach(g=>{g.classList.toggle("sel",g.dataset.id===sel);g.classList.toggle("near",near.has(g.dataset.id));});
+}
+function setT(){view.setAttribute("transform",`translate(${tf.x},${tf.y}) scale(${tf.k})`);
+  const s1=20*tf.k,s2=100*tf.k;stage.style.backgroundSize=`${s2}px ${s2}px,${s2}px ${s2}px,${s1}px ${s1}px,${s1}px ${s1}px`;stage.style.backgroundPosition=`${tf.x}px ${tf.y}px`;}
+function fit(){const ns=N.filter(n=>n.g===cur);const cs=COMMENTS.filter(c=>c.g===cur);
+  let x0=Math.min(...ns.map(n=>n.x),...cs.map(c=>c.x)),y0=Math.min(...ns.map(n=>n.y),...cs.map(c=>c.y)),x1=Math.max(...ns.map(n=>n.x+n.w),...cs.map(c=>c.x+c.w)),y1=Math.max(...ns.map(n=>n.y+n.h),...cs.map(c=>c.y+c.h));
+  const r=stage.getBoundingClientRect();const m=40;const k=Math.min(1,(r.width-2*m)/(x1-x0),(r.height-2*m-30)/(y1-y0));
+  tf.k=Math.max(r.width<700?.45:.62,k);const gw=(x1-x0)*tf.k;tf.x=gw<r.width-2*m?(r.width-gw)/2-x0*tf.k:m-x0*tf.k;tf.y=(r.height-(y1-y0)*tf.k)/2-y0*tf.k+12;setT();}
+function zoom(f,cx,cy){const r=stage.getBoundingClientRect();if(cx===undefined){cx=r.width/2;cy=r.height/2;}const k=Math.min(2.2,Math.max(.2,tf.k*f));tf.x=cx-(cx-tf.x)*k/tf.k;tf.y=cy-(cy-tf.y)*k/tf.k;tf.k=k;setT();}
+
+/* ---------- panel ---------- */
+const panel=document.getElementById("panel");
+const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+function graphIntro(){const g=GRAPHS.find(x=>x.id===cur);const list=N.filter(n=>n.g===cur).map(n=>`<li><code>${esc(n.t)}</code> <span style="color:var(--muted)">${esc(n.s||"")}</span></li>`).join("");
+  panel.innerHTML=`<span class="kind" style="background:${cssv("--h-macro")}">${g.lvl} · 图</span><h2>${g.name}</h2>${g.intro}<h3>本图节点</h3><ul style="padding-left:18px;line-height:1.9;margin:0">${list}</ul><p class="empty" style="margin-top:16px">单击画布上的节点查看函数拆解。</p>`;}
+function select(id){sel=id;applySel();const n=byId[id],i=n.info||{};const k=KIND[n.k];
+  let h=`<span class="kind" style="background:${cssv(k[1])}">${k[0]}</span><h2>${esc(n.t)}</h2>`;
+  if(i.loc)h+=`<a class="loc" href="${GH+i.loc}" target="_blank" rel="noopener">${i.loc.replace("#L",":")} ↗</a>`;
+  if(i.sig)h+=`<h3>签名</h3><pre class="sig">${esc(i.sig)}</pre>`;
+  if(i.what)h+=`<h3>做了什么</h3>${i.what}`;
+  if(i.code)h+=`<h3>关键代码</h3><pre>${esc(i.code)}</pre>`;
+  if(i.formula)h+=`<div class="formula">${esc(i.formula)}</div>`;
+  if(i.why)h+=`<h3>原理与设计</h3>${i.why}`;
+  if(i.qa&&i.qa.length)h+=`<h3>面试可能怎么问</h3>`+i.qa.map(q=>`<details><summary>${esc(q[0])}</summary><div class="ans">${esc(q[1])}</div></details>`).join("");
+  if(n.drill){const g=GRAPHS.find(x=>x.id===n.drill);h+=`<button class="drillbtn" id="dbtn">进入子图：${g.name} →</button>`;}
+  panel.innerHTML=h;panel.scrollTop=0;const b=document.getElementById("dbtn");if(b)b.onclick=()=>go(n.drill);}
+
+/* ---------- nav ---------- */
+const tabs=document.getElementById("tabs"),crumb=document.getElementById("crumb");
+const modsEl=document.getElementById("mods");let curMod=null;
+MODS.forEach(([id,name])=>{const b=document.createElement("button");b.className="mod";b.textContent=name;b.dataset.id=id;b.onclick=()=>{const g=GRAPHS.find(x=>x.mod===id);if(g)go(g.id);};modsEl.appendChild(b);});
+function buildTabs(mod){tabs.innerHTML="";GRAPHS.filter(g=>g.mod===mod).forEach(g=>{const b=document.createElement("button");b.className="tab";b.role="tab";b.innerHTML=`<span class="lvl">${g.lvl}</span>${g.name}`;b.onclick=()=>go(g.id);b.dataset.id=g.id;tabs.appendChild(b);});tabs.hidden=GRAPHS.filter(g=>g.mod===mod).length<2;}
+function go(id){stopSim();const gg=GRAPHS.find(x=>x.id===id);if(gg.mod!==curMod){curMod=gg.mod;buildTabs(curMod);modsEl.querySelectorAll(".mod").forEach(b=>b.setAttribute("aria-pressed",b.dataset.id===curMod));}cur=id;sel=null;draw();fit();graphIntro();
+  tabs.querySelectorAll(".tab").forEach(b=>b.setAttribute("aria-selected",b.dataset.id===id));
+  const chain=[];let g=GRAPHS.find(x=>x.id===id);while(g){chain.unshift(g.name);g=GRAPHS.find(x=>x.id===g.parent);}
+  crumb.innerHTML=chain.map((c,i)=>i===chain.length-1?`<b>${c}</b>`:c).join(" › ");
+  try{localStorage.setItem("trb-graph2",id);}catch(e){}}
+const lg=document.getElementById("legend");TYPE_NAMES.forEach(([t,n])=>{lg.insertAdjacentHTML("beforeend",`<span><i style="background:${cssv(TYPES[t])}"></i>${n}</span>`);});
+
+/* ---------- data-flow simulation ---------- */
+const playBtn=document.getElementById("play");
+const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+let simToken=0;
+function stopSim(){simToken++;playBtn.classList.remove("on");playBtn.textContent="▶ 数据流演示";
+  if(fx)fx.innerHTML="";view.querySelectorAll(".node").forEach(g=>g.classList.remove("fire","done"));}
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+function travel(w,token){return new Promise(res=>{
+  const len=w.path.getTotalLength();const c=el("circle",{r:5.5,fill:w.color,filter:"url(#glow)",class:"particle"},fx);
+  const dur=reduce?1:Math.min(1300,Math.max(650,len*1.6));const t0=performance.now();
+  const tick=now=>{if(token!==simToken){c.remove();return res();}
+    const t=Math.min(1,(now-t0)/dur);const e=t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;const pt=w.path.getPointAtLength(e*len);
+    c.setAttribute("cx",pt.x);c.setAttribute("cy",pt.y);if(t<1)requestAnimationFrame(tick);else{c.remove();res();}};
+  requestAnimationFrame(tick);});}
+async function playSim(){
+  stopSim();const token=simToken;playBtn.classList.add("on");playBtn.textContent="■ 停止";
+  const ids=N.filter(n=>n.g===cur).map(n=>n.id);const indeg=Object.fromEntries(ids.map(i=>[i,0]));
+  wireEls.forEach(w=>indeg[w.b]++);
+  let wave=ids.filter(i=>indeg[i]===0);const nodeEl=id=>view.querySelector(`.node[data-id="${id}"]`);
+  while(wave.length&&token===simToken){
+    wave.forEach(id=>{const g=nodeEl(id);g.classList.add("fire");});
+    if(wave.length===1)select(wave[0]);
+    await wait(reduce?0:420);if(token!==simToken)return;
+    const outs=wireEls.filter(w=>wave.includes(w.a));
+    wave.forEach(id=>{const g=nodeEl(id);g.classList.remove("fire");g.classList.add("done");});
+    const next=[];await Promise.all(outs.map(w=>travel(w,token).then(()=>{if(--indeg[w.b]===0)next.push(w.b);})));
+    wave=next;}
+  if(token!==simToken)return;await wait(1400);if(token===simToken)stopSim();}
+playBtn.onclick=()=>{playBtn.classList.contains("on")?stopSim():playSim();};
+
+/* ---------- pan / zoom ---------- */
+let drag=null;
+stage.addEventListener("pointerdown",e=>{if(e.target.closest(".node,.btn"))return;drag={x:e.clientX,y:e.clientY,tx:tf.x,ty:tf.y,moved:false};stage.setPointerCapture(e.pointerId);stage.classList.add("dragging");});
+stage.addEventListener("pointermove",e=>{if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.abs(dx)+Math.abs(dy)>3)drag.moved=true;tf.x=drag.tx+dx;tf.y=drag.ty+dy;setT();});
+stage.addEventListener("pointerup",e=>{if(drag&&!drag.moved&&!e.target.closest(".node")){sel=null;applySel();graphIntro();}drag=null;stage.classList.remove("dragging");});
+stage.addEventListener("wheel",e=>{e.preventDefault();const r=stage.getBoundingClientRect();zoom(e.deltaY<0?1.12:1/1.12,e.clientX-r.left,e.clientY-r.top);},{passive:false});
+document.getElementById("zin").onclick=()=>zoom(1.2);document.getElementById("zout").onclick=()=>zoom(1/1.2);document.getElementById("fit").onclick=fit;
+window.addEventListener("resize",fit);
+let start="repo";try{const s=localStorage.getItem("trb-graph2");if(s&&GRAPHS.some(g=>g.id===s))start=s;}catch(e){}
+go(start);
+</script>
+</body>
+</html>
